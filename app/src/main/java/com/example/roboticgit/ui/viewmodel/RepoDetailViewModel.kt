@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.example.roboticgit.data.AuthManager
+import com.example.roboticgit.data.CommitChange
 import com.example.roboticgit.data.GitManager
 import com.example.roboticgit.data.RepoFile
 import com.example.roboticgit.data.model.FileStatus
@@ -59,6 +60,14 @@ class RepoDetailViewModel(
 
     suspend fun listFiles(relativePath: String): List<RepoFile> {
         return gitManager.listFiles(repo, relativePath)
+    }
+
+    suspend fun getCommitChanges(commit: RevCommit): List<CommitChange> {
+        return gitManager.getCommitChanges(repo, commit)
+    }
+
+    suspend fun getCommitFileDiff(commit: RevCommit, path: String): String {
+        return gitManager.getCommitFileDiff(repo, commit, path)
     }
 
     fun saveFile(path: String, content: String) {

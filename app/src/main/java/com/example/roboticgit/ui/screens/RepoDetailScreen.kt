@@ -1,5 +1,6 @@
 package com.example.roboticgit.ui.screens
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -8,10 +9,10 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -19,9 +20,18 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.input.OffsetMapping
+import androidx.compose.ui.text.input.TransformedText
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -29,6 +39,7 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import com.example.roboticgit.data.AuthManager
+import com.example.roboticgit.data.CommitChange
 import com.example.roboticgit.data.RepoFile
 import com.example.roboticgit.data.model.FileState
 import com.example.roboticgit.data.model.FileStatus
@@ -58,11 +69,14 @@ fun RepoDetailScreen(
     var commitMessage by remember { mutableStateOf("") }
     var selectedTab by remember { mutableIntStateOf(0) }
     
-    var diffFile by remember { mutableStateOf<FileStatus?>(null) }
+    var diffFile by remember { mutableStateOf<String?>(null) }
     var diffText by remember { mutableStateOf<String?>(null) }
     
     var editingPath by remember { mutableStateOf<String?>(null) }
     var editingText by remember { mutableStateOf("") }
+
+    var selectedCommit by remember { mutableStateOf<RevCommit?>(null) }
+    var commitChanges by remember { mutableStateOf<List<CommitChange>>(emptyList()) }
     
     val scope = rememberCoroutineScope()
 
@@ -116,7 +130,7 @@ fun RepoDetailScreen(
                                 onToggleStage = viewModel::toggleStage,
                                 onRollback = viewModel::rollbackFile,
                                 onFileClick = { file ->
-                                    diffFile = file
+                                    diffFile = file.path
                                     scope.launch {
                                         diffText = viewModel.getFileDiff(file)
                                     }
@@ -139,7 +153,13 @@ fun RepoDetailScreen(
                             )
                             2 -> HistoryView(
                                 commits = state.commits,
-                                getGravatarUrl = viewModel::getGravatarUrl
+                                getGravatarUrl = viewModel::getGravatarUrl,
+                                onCommitClick = { commit ->
+                                    selectedCommit = commit
+                                    scope.launch {
+                                        commitChanges = viewModel.getCommitChanges(commit)
+                                    }
+                                }
                             )
                         }
                     }
@@ -152,7 +172,7 @@ fun RepoDetailScreen(
 
         if (diffFile != null) {
             DiffDialog(
-                fileName = diffFile?.path ?: "",
+                fileName = diffFile ?: "",
                 diffText = diffText,
                 onDismiss = {
                     diffFile = null
@@ -173,6 +193,24 @@ fun RepoDetailScreen(
                 onDismiss = { editingPath = null }
             )
         }
+
+        if (selectedCommit != null) {
+            CommitDetailDialog(
+                commit = selectedCommit!!,
+                changes = commitChanges,
+                getGravatarUrl = viewModel::getGravatarUrl,
+                onFileClick = { path ->
+                    diffFile = path
+                    scope.launch {
+                        diffText = viewModel.getCommitFileDiff(selectedCommit!!, path)
+                    }
+                },
+                onDismiss = {
+                    selectedCommit = null
+                    commitChanges = emptyList()
+                }
+            )
+        }
     }
 }
 
@@ -183,14 +221,12 @@ fun FilesView(
 ) {
     var currentPath by remember { mutableStateOf("") }
     var files by remember { mutableStateOf<List<RepoFile>>(emptyList()) }
-    val scope = rememberCoroutineScope()
 
     LaunchedEffect(currentPath) {
         files = viewModel.listFiles(currentPath)
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
-        // Path breadcrumbs
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -421,21 +457,10 @@ fun EditorDialog(
                     }
                 )
                 
-                TextField(
+                CodeEditor(
                     value = content,
                     onValueChange = onContentChange,
-                    modifier = Modifier.fillMaxSize(),
-                    textStyle = LocalTextStyle.current.copy(
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 14.sp
-                    ),
-                    placeholder = { Text("File is empty") },
-                    colors = TextFieldDefaults.colors(
-                        focusedContainerColor = Color.Transparent,
-                        unfocusedContainerColor = Color.Transparent,
-                        focusedIndicatorColor = Color.Transparent,
-                        unfocusedIndicatorColor = Color.Transparent
-                    )
+                    modifier = Modifier.weight(1f)
                 )
             }
         }
@@ -443,13 +468,157 @@ fun EditorDialog(
 }
 
 @Composable
+fun CodeEditor(
+    value: String,
+    onValueChange: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val scrollState = rememberScrollState()
+    var textLayoutResult by remember { mutableStateOf<TextLayoutResult?>(null) }
+    
+    val lineNumbers = remember(value) {
+        val count = value.count { it == '\n' } + 1
+        (1..count).joinToString("\n")
+    }
+
+    val gutterBackground = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+    val gutterTextColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+    val guideColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f)
+
+    Row(modifier = modifier
+        .fillMaxSize()
+        .background(MaterialTheme.colorScheme.surface)) {
+        
+        Box(
+            modifier = Modifier
+                .fillMaxHeight()
+                .width(48.dp)
+                .background(gutterBackground)
+                .verticalScroll(scrollState)
+                .padding(vertical = 16.dp),
+            contentAlignment = Alignment.TopEnd
+        ) {
+            Text(
+                text = lineNumbers,
+                style = TextStyle(
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 12.sp,
+                    lineHeight = 20.sp,
+                    color = gutterTextColor
+                ),
+                modifier = Modifier.padding(end = 8.dp)
+            )
+        }
+
+        Box(modifier = Modifier
+            .weight(1f)
+            .fillMaxHeight()
+            .verticalScroll(scrollState)
+            .horizontalScroll(rememberScrollState())
+            .padding(16.dp)
+        ) {
+            Canvas(modifier = Modifier.matchParentSize()) {
+                val layout = textLayoutResult ?: return@Canvas
+                
+                val charWidth = if (layout.lineCount > 0 && layout.getLineEnd(0) > 0) {
+                    layout.getHorizontalPosition(1, false)
+                } else {
+                    7.2.sp.toPx() 
+                }
+                val tabWidth = charWidth * 4
+
+                for (lineIndex in 0 until layout.lineCount) {
+                    val lineStart = layout.getLineStart(lineIndex)
+                    val lineEnd = layout.getLineEnd(lineIndex)
+                    val lineText = value.substring(lineStart, lineEnd)
+                    
+                    var leadingSpaces = 0
+                    for (char in lineText) {
+                        if (char == ' ') leadingSpaces++
+                        else if (char == '\t') {
+                            leadingSpaces += 4 - (leadingSpaces % 4)
+                        } else break
+                    }
+                    
+                    val indentLevels = leadingSpaces / 4
+                    if (indentLevels > 0) {
+                        val top = layout.getLineTop(lineIndex)
+                        val bottom = layout.getLineBottom(lineIndex)
+                        
+                        for (level in 1..indentLevels) {
+                            val x = level * tabWidth
+                            drawLine(
+                                color = guideColor,
+                                start = Offset(x, top),
+                                end = Offset(x, bottom),
+                                strokeWidth = 1.dp.toPx()
+                            )
+                        }
+                    }
+                }
+            }
+
+            BasicTextField(
+                value = value,
+                onValueChange = onValueChange,
+                modifier = Modifier.fillMaxWidth(),
+                textStyle = TextStyle(
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 12.sp,
+                    lineHeight = 20.sp,
+                    color = MaterialTheme.colorScheme.onSurface
+                ),
+                cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                onTextLayout = { textLayoutResult = it },
+                visualTransformation = WhitespaceVisualTransformation()
+            )
+        }
+    }
+}
+
+class WhitespaceVisualTransformation : VisualTransformation {
+    override fun filter(text: AnnotatedString): TransformedText {
+        val out = text.text
+            .replace(' ', '·')
+            .replace("\t", "»   ")
+        
+        val offsetMapping = object : OffsetMapping {
+            override fun originalToTransformed(offset: Int): Int {
+                var transformedOffset = 0
+                for (i in 0 until offset) {
+                    if (text.text[i] == '\t') transformedOffset += 4 else transformedOffset++
+                }
+                return transformedOffset
+            }
+
+            override fun transformedToOriginal(offset: Int): Int {
+                var currentTransformed = 0
+                var originalOffset = 0
+                while (currentTransformed < offset && originalOffset < text.text.length) {
+                    if (text.text[originalOffset] == '\t') {
+                        currentTransformed += 4
+                    } else {
+                        currentTransformed++
+                    }
+                    originalOffset++
+                }
+                return originalOffset
+            }
+        }
+
+        return TransformedText(AnnotatedString(out), offsetMapping)
+    }
+}
+
+@Composable
 fun HistoryView(
     commits: List<RevCommit>,
-    getGravatarUrl: (String) -> String
+    getGravatarUrl: (String) -> String,
+    onCommitClick: (RevCommit) -> Unit
 ) {
     LazyColumn(modifier = Modifier.fillMaxSize()) {
         items(commits) { commit ->
-            CommitItem(commit, getGravatarUrl)
+            CommitItem(commit, getGravatarUrl, onClick = { onCommitClick(commit) })
             HorizontalDivider()
         }
     }
@@ -458,7 +627,8 @@ fun HistoryView(
 @Composable
 fun CommitItem(
     commit: RevCommit,
-    getGravatarUrl: (String) -> String
+    getGravatarUrl: (String) -> String,
+    onClick: () -> Unit
 ) {
     val email = commit.authorIdent.emailAddress
     ListItem(
@@ -474,6 +644,54 @@ fun CommitItem(
                     .size(40.dp)
                     .clip(CircleShape)
             )
+        },
+        modifier = Modifier.clickable { onClick() }
+    )
+}
+
+@Composable
+fun CommitDetailDialog(
+    commit: RevCommit,
+    changes: List<CommitChange>,
+    getGravatarUrl: (String) -> String,
+    onFileClick: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Commit Details") },
+        text = {
+            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    AsyncImage(
+                        model = getGravatarUrl(commit.authorIdent.emailAddress),
+                        contentDescription = null,
+                        modifier = Modifier.size(48.dp).clip(CircleShape)
+                    )
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column {
+                        Text(commit.authorIdent.name, style = MaterialTheme.typography.titleMedium)
+                        Text(Date(commit.commitTime * 1000L).toString(), style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+                Spacer(modifier = Modifier.height(16.dp))
+                Text("Hash: ${commit.name}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(commit.fullMessage, style = MaterialTheme.typography.bodyMedium)
+                
+                Spacer(modifier = Modifier.height(16.dp))
+                Text("Changes", style = MaterialTheme.typography.titleSmall)
+                changes.forEach { change ->
+                    ListItem(
+                        headlineContent = { Text(change.path, fontSize = 14.sp) },
+                        supportingContent = { Text(change.changeType, style = MaterialTheme.typography.bodySmall) },
+                        modifier = Modifier.clickable { onFileClick(change.path) }
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("Close") }
         }
     )
 }

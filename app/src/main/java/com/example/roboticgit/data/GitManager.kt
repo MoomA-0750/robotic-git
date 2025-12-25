@@ -5,11 +5,13 @@ import com.example.roboticgit.data.model.FileStatus
 import com.example.roboticgit.data.model.GitRepo
 import org.eclipse.jgit.api.Git
 import org.eclipse.jgit.api.errors.GitAPIException
+import org.eclipse.jgit.diff.DiffEntry
 import org.eclipse.jgit.diff.DiffFormatter
 import org.eclipse.jgit.dircache.DirCacheIterator
 import org.eclipse.jgit.lib.Constants
 import org.eclipse.jgit.lib.ProgressMonitor
 import org.eclipse.jgit.revwalk.RevCommit
+import org.eclipse.jgit.revwalk.RevWalk
 import org.eclipse.jgit.transport.UsernamePasswordCredentialsProvider
 import org.eclipse.jgit.treewalk.CanonicalTreeParser
 import org.eclipse.jgit.treewalk.FileTreeIterator
@@ -133,8 +135,7 @@ class GitManager(private val rootDir: File) {
                 val repoObj = git.repository
                 val hasCommits = repoObj.resolve(Constants.HEAD) != null
 
-                // Untracked files: Show everything as addition (+)
-                if (fileStatus.state == FileState.UNTRACKED) {
+                if (fileStatus.state == FileState.UNTRACKED || (!hasCommits && fileStatus.state == FileState.ADDED)) {
                     val file = File(repo.localPath, fileStatus.path)
                     if (file.exists()) {
                         val content = try { file.readText() } catch (e: Exception) { "" }
@@ -149,7 +150,6 @@ class GitManager(private val rootDir: File) {
                     formatter.setPathFilter(PathFilter.create(fileStatus.path))
 
                     val diffs = if (fileStatus.isStaged) {
-                        // Staged: Compare HEAD vs Index
                         if (hasCommits) {
                             val headTree = CanonicalTreeParser()
                             repoObj.newObjectReader().use { reader ->
@@ -159,16 +159,9 @@ class GitManager(private val rootDir: File) {
                             val indexTree = DirCacheIterator(repoObj.readDirCache())
                             formatter.scan(headTree, indexTree)
                         } else {
-                            // No commits yet, show all as new
-                            val file = File(repo.localPath, fileStatus.path)
-                            if (file.exists()) {
-                                val content = try { file.readText() } catch (e: Exception) { "" }
-                                return@withContext Result.success(content.lines().joinToString("\n") { "+$it" })
-                            }
                             emptyList()
                         }
                     } else {
-                        // Unstaged: Compare Index vs Working Tree
                         val indexTree = DirCacheIterator(repoObj.readDirCache())
                         val workTree = FileTreeIterator(repoObj)
                         formatter.scan(indexTree, workTree)
@@ -188,6 +181,68 @@ class GitManager(private val rootDir: File) {
             }
         } catch (e: Exception) {
             Result.failure(e)
+        }
+    }
+
+    suspend fun getCommitChanges(repo: GitRepo, commit: RevCommit): List<CommitChange> = withContext(Dispatchers.IO) {
+        try {
+            Git.open(repo.localPath).use { git ->
+                val repoObj = git.repository
+                val reader = repoObj.newObjectReader()
+                val oldTreeIter = CanonicalTreeParser()
+                if (commit.parentCount > 0) {
+                    oldTreeIter.reset(reader, commit.getParent(0).tree)
+                } else {
+                    // For the first commit, compare against empty tree
+                    oldTreeIter.reset()
+                }
+                val newTreeIter = CanonicalTreeParser()
+                newTreeIter.reset(reader, commit.tree)
+
+                DiffFormatter(null).use { formatter ->
+                    formatter.setRepository(repoObj)
+                    val diffs = formatter.scan(oldTreeIter, newTreeIter)
+                    diffs.map { entry ->
+                        CommitChange(
+                            path = if (entry.changeType == DiffEntry.ChangeType.DELETE) entry.oldPath else entry.newPath,
+                            changeType = entry.changeType.name
+                        )
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    suspend fun getCommitFileDiff(repo: GitRepo, commit: RevCommit, path: String): String = withContext(Dispatchers.IO) {
+        try {
+            Git.open(repo.localPath).use { git ->
+                val repoObj = git.repository
+                val out = ByteArrayOutputStream()
+                DiffFormatter(out).use { formatter ->
+                    formatter.setRepository(repoObj)
+                    formatter.setPathFilter(PathFilter.create(path))
+                    
+                    val reader = repoObj.newObjectReader()
+                    val oldTreeIter = CanonicalTreeParser()
+                    if (commit.parentCount > 0) {
+                        oldTreeIter.reset(reader, commit.getParent(0).tree)
+                    } else {
+                        oldTreeIter.reset()
+                    }
+                    val newTreeIter = CanonicalTreeParser()
+                    newTreeIter.reset(reader, commit.tree)
+                    
+                    val diffs = formatter.scan(oldTreeIter, newTreeIter)
+                    for (entry in diffs) {
+                        formatter.format(entry)
+                    }
+                    out.toString("UTF-8")
+                }
+            }
+        } catch (e: Exception) {
+            "Error loading diff: ${e.message}"
         }
     }
 
@@ -322,4 +377,9 @@ data class RepoFile(
     val name: String,
     val path: String,
     val isDirectory: Boolean
+)
+
+data class CommitChange(
+    val path: String,
+    val changeType: String
 )
