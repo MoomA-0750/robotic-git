@@ -1,14 +1,15 @@
 package com.example.roboticgit.ui.navigation
 
-import androidx.compose.runtime.Composable
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.NavHostController
 import com.example.roboticgit.ui.navigation.RoboticGitDestinations.HOME_ROUTE
 import com.example.roboticgit.ui.navigation.RoboticGitDestinations.SETTINGS_ROUTE
+import com.example.roboticgit.ui.navigation.RoboticGitDestinations.ACCOUNTS_ROUTE
 
 object RoboticGitDestinations {
     const val HOME_ROUTE = "home"
     const val SETTINGS_ROUTE = "settings"
+    const val ACCOUNTS_ROUTE = "accounts"
     const val REPO_DETAIL_ROUTE = "repo_detail/{repoName}"
 }
 
@@ -31,6 +32,10 @@ class RoboticGitNavigationActions(private val navController: NavHostController) 
             launchSingleTop = true
             restoreState = true
         }
+    }
+
+    fun navigateToAccounts() {
+        navController.navigate(ACCOUNTS_ROUTE)
     }
     
     fun navigateToRepoDetail(repoName: String) {

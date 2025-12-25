@@ -28,13 +28,16 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.example.roboticgit.ui.navigation.RoboticGitDestinations
 import com.example.roboticgit.ui.navigation.RoboticGitNavigationActions
+import com.example.roboticgit.ui.screens.AccountsScreen
 import com.example.roboticgit.ui.screens.HomeScreen
 import com.example.roboticgit.ui.screens.RepoDetailScreen
 import com.example.roboticgit.ui.screens.SettingsScreen
+import com.example.roboticgit.ui.viewmodel.SettingsViewModel
 
 @Composable
 fun RoboticGitApp(
     widthSizeClass: WindowWidthSizeClass,
+    settingsViewModel: SettingsViewModel,
     navController: NavHostController = rememberNavController()
 ) {
     val navActions = remember(navController) {
@@ -51,9 +54,8 @@ fun RoboticGitApp(
         else -> RoboticGitNavigationType.BOTTOM_NAVIGATION
     }
 
-    // Hide navigation rail/bottom bar when in detail view if compact? 
-    // For now, keep it simple, maybe hide for detail view
-    val isDetailRoute = currentRoute?.startsWith("repo_detail") == true
+    val isDetailRoute = currentRoute?.startsWith("repo_detail") == true || 
+                       currentRoute == RoboticGitDestinations.ACCOUNTS_ROUTE
     
     RoboticGitNavigationWrapper(
         navController = navController,
@@ -62,8 +64,10 @@ fun RoboticGitApp(
         isDetailRoute = isDetailRoute,
         navigateToHome = navActions::navigateToHome,
         navigateToSettings = navActions::navigateToSettings,
+        navigateToAccounts = navActions::navigateToAccounts,
         navigateToRepoDetail = navActions::navigateToRepoDetail,
-        navigateUp = navActions::navigateUp
+        navigateUp = navActions::navigateUp,
+        settingsViewModel = settingsViewModel
     )
 }
 
@@ -79,10 +83,12 @@ fun RoboticGitNavigationWrapper(
     isDetailRoute: Boolean,
     navigateToHome: () -> Unit,
     navigateToSettings: () -> Unit,
+    navigateToAccounts: () -> Unit,
     navigateToRepoDetail: (String) -> Unit,
-    navigateUp: () -> Unit
+    navigateUp: () -> Unit,
+    settingsViewModel: SettingsViewModel
 ) {
-    if (navigationType == RoboticGitNavigationType.PERMANENT_NAVIGATION_DRAWER && !isDetailRoute) { // Don't show drawer in detail if we want full screen, or maybe we do? Adapting.
+    if (navigationType == RoboticGitNavigationType.PERMANENT_NAVIGATION_DRAWER && !isDetailRoute) {
          PermanentNavigationDrawer(
             drawerContent = {
                 PermanentDrawerSheet {
@@ -97,9 +103,10 @@ fun RoboticGitNavigationWrapper(
         ) {
             AppContent(
                 navController = navController, 
-                navigationType = navigationType,
                 navigateToRepoDetail = navigateToRepoDetail,
-                navigateUp = navigateUp
+                navigateToAccounts = navigateToAccounts,
+                navigateUp = navigateUp,
+                settingsViewModel = settingsViewModel
             )
         }
     } else {
@@ -125,21 +132,18 @@ fun RoboticGitNavigationWrapper(
                     }
                 }
             ) { innerPadding ->
-                // Apply padding only if bottom bar exists
-                // If Rail, the Row handles it
-                // Actually Scaffold innerPadding needs to be handled
                 Box(modifier = Modifier.padding(innerPadding)) {
                     AppContent(
                         navController = navController, 
-                        navigationType = navigationType,
                         navigateToRepoDetail = navigateToRepoDetail,
-                        navigateUp = navigateUp
+                        navigateToAccounts = navigateToAccounts,
+                        navigateUp = navigateUp,
+                        settingsViewModel = settingsViewModel
                     )
                 }
             }
         }
     }
-   
 }
 
 @Composable
@@ -185,9 +189,10 @@ fun AppNavigationContent(
 @Composable
 fun AppContent(
     navController: NavHostController,
-    navigationType: RoboticGitNavigationType,
     navigateToRepoDetail: (String) -> Unit,
-    navigateUp: () -> Unit
+    navigateToAccounts: () -> Unit,
+    navigateUp: () -> Unit,
+    settingsViewModel: SettingsViewModel
 ) {
      NavHost(
         navController = navController,
@@ -200,7 +205,16 @@ fun AppContent(
             )
         }
         composable(RoboticGitDestinations.SETTINGS_ROUTE) {
-            SettingsScreen()
+            SettingsScreen(
+                onNavigateToAccounts = navigateToAccounts,
+                viewModel = settingsViewModel
+            )
+        }
+        composable(RoboticGitDestinations.ACCOUNTS_ROUTE) {
+            AccountsScreen(
+                onBack = navigateUp,
+                viewModel = settingsViewModel
+            )
         }
         composable(RoboticGitDestinations.REPO_DETAIL_ROUTE) { backStackEntry ->
             val repoName = backStackEntry.arguments?.getString("repoName") ?: return@composable

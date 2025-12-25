@@ -1,10 +1,20 @@
 package com.example.roboticgit.data
 
+import com.example.roboticgit.data.model.FileState
+import com.example.roboticgit.data.model.FileStatus
 import com.example.roboticgit.data.model.GitRepo
 import org.eclipse.jgit.api.Git
 import org.eclipse.jgit.api.errors.GitAPIException
+import org.eclipse.jgit.diff.DiffFormatter
+import org.eclipse.jgit.dircache.DirCacheIterator
+import org.eclipse.jgit.lib.Constants
+import org.eclipse.jgit.lib.ProgressMonitor
 import org.eclipse.jgit.revwalk.RevCommit
 import org.eclipse.jgit.transport.UsernamePasswordCredentialsProvider
+import org.eclipse.jgit.treewalk.CanonicalTreeParser
+import org.eclipse.jgit.treewalk.FileTreeIterator
+import org.eclipse.jgit.treewalk.filter.PathFilter
+import java.io.ByteArrayOutputStream
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -30,7 +40,8 @@ class GitManager(private val rootDir: File) {
     suspend fun cloneRepository(
         url: String, 
         name: String, 
-        token: String? = null
+        token: String? = null,
+        onProgress: (String, Float) -> Unit = { _, _ -> }
     ): Result<GitRepo> = withContext(Dispatchers.IO) {
         val destination = File(rootDir, name)
         if (destination.exists()) {
@@ -38,13 +49,37 @@ class GitManager(private val rootDir: File) {
         }
 
         try {
+            val monitor = object : ProgressMonitor {
+                private var totalWork = 0
+                private var completedWork = 0
+                private var currentTask = ""
+
+                override fun start(totalTasks: Int) {}
+                override fun beginTask(title: String, totalWork: Int) {
+                    this.currentTask = title
+                    this.totalWork = totalWork
+                    this.completedWork = 0
+                    onProgress(currentTask, 0f)
+                }
+                override fun update(completed: Int) {
+                    completedWork += completed
+                    if (totalWork > 0) {
+                        onProgress(currentTask, completedWork.toFloat() / totalWork)
+                    }
+                }
+                override fun endTask() {
+                    onProgress(currentTask, 1f)
+                }
+                override fun isCancelled(): Boolean = false
+                override fun showDuration(enabled: Boolean) {}
+            }
+
             val cloneCommand = Git.cloneRepository()
                 .setURI(url)
                 .setDirectory(destination)
+                .setProgressMonitor(monitor)
             
             if (!token.isNullOrBlank()) {
-                // For GitHub/Gitea tokens, username can be anything (or the token itself)
-                // Using "token" as username and the token as password is a common pattern
                 cloneCommand.setCredentialsProvider(UsernamePasswordCredentialsProvider("token", token))
             }
 
@@ -60,6 +95,9 @@ class GitManager(private val rootDir: File) {
     suspend fun getCommits(repo: GitRepo): Result<List<RevCommit>> = withContext(Dispatchers.IO) {
         try {
             Git.open(repo.localPath).use { git ->
+                if (git.repository.resolve(Constants.HEAD) == null) {
+                    return@withContext Result.success(emptyList())
+                }
                 val commits = git.log().call().toList()
                 Result.success(commits)
             }
@@ -68,33 +106,180 @@ class GitManager(private val rootDir: File) {
         }
     }
 
-    suspend fun getFormattedStatus(repo: GitRepo): Result<String> = withContext(Dispatchers.IO) {
+    suspend fun getFileStatuses(repo: GitRepo): Result<List<FileStatus>> = withContext(Dispatchers.IO) {
         try {
             Git.open(repo.localPath).use { git ->
                 val status = git.status().call()
-                val sb = StringBuilder()
-                if (status.isClean) {
-                    sb.append("Clean")
-                } else {
-                    if (status.added.isNotEmpty()) sb.append("Added: ${status.added}\n")
-                    if (status.changed.isNotEmpty()) sb.append("Changed: ${status.changed}\n")
-                    if (status.removed.isNotEmpty()) sb.append("Removed: ${status.removed}\n")
-                    if (status.missing.isNotEmpty()) sb.append("Missing: ${status.missing}\n")
-                    if (status.modified.isNotEmpty()) sb.append("Modified: ${status.modified}\n")
-                    if (status.untracked.isNotEmpty()) sb.append("Untracked: ${status.untracked}\n")
-                }
-                Result.success(sb.toString())
+                val result = mutableListOf<FileStatus>()
+                
+                status.modified.forEach { result.add(FileStatus(it, FileState.MODIFIED, false)) }
+                status.untracked.forEach { result.add(FileStatus(it, FileState.UNTRACKED, false)) }
+                status.missing.forEach { result.add(FileStatus(it, FileState.MISSING, false)) }
+                
+                status.changed.forEach { result.add(FileStatus(it, FileState.MODIFIED, true)) }
+                status.added.forEach { result.add(FileStatus(it, FileState.ADDED, true)) }
+                status.removed.forEach { result.add(FileStatus(it, FileState.REMOVED, true)) }
+                
+                Result.success(result.sortedBy { it.path })
             }
         } catch (e: Exception) {
             Result.failure(e)
         }
     }
 
-    suspend fun commit(repo: GitRepo, message: String): Result<Unit> = withContext(Dispatchers.IO) {
+    suspend fun getFileDiff(repo: GitRepo, fileStatus: FileStatus): Result<String> = withContext(Dispatchers.IO) {
+        try {
+            Git.open(repo.localPath).use { git ->
+                val repoObj = git.repository
+                val hasCommits = repoObj.resolve(Constants.HEAD) != null
+
+                // Untracked files: Show everything as addition (+)
+                if (fileStatus.state == FileState.UNTRACKED) {
+                    val file = File(repo.localPath, fileStatus.path)
+                    if (file.exists()) {
+                        val content = try { file.readText() } catch (e: Exception) { "" }
+                        return@withContext Result.success(content.lines().joinToString("\n") { "+$it" })
+                    }
+                }
+
+                val out = ByteArrayOutputStream()
+                DiffFormatter(out).use { formatter ->
+                    formatter.setRepository(repoObj)
+                    formatter.setContext(3)
+                    formatter.setPathFilter(PathFilter.create(fileStatus.path))
+
+                    val diffs = if (fileStatus.isStaged) {
+                        // Staged: Compare HEAD vs Index
+                        if (hasCommits) {
+                            val headTree = CanonicalTreeParser()
+                            repoObj.newObjectReader().use { reader ->
+                                val headId = repoObj.resolve(Constants.HEAD + "^{tree}")
+                                headTree.reset(reader, headId)
+                            }
+                            val indexTree = DirCacheIterator(repoObj.readDirCache())
+                            formatter.scan(headTree, indexTree)
+                        } else {
+                            // No commits yet, show all as new
+                            val file = File(repo.localPath, fileStatus.path)
+                            if (file.exists()) {
+                                val content = try { file.readText() } catch (e: Exception) { "" }
+                                return@withContext Result.success(content.lines().joinToString("\n") { "+$it" })
+                            }
+                            emptyList()
+                        }
+                    } else {
+                        // Unstaged: Compare Index vs Working Tree
+                        val indexTree = DirCacheIterator(repoObj.readDirCache())
+                        val workTree = FileTreeIterator(repoObj)
+                        formatter.scan(indexTree, workTree)
+                    }
+
+                    if (diffs.isEmpty()) {
+                        return@withContext Result.success("No changes detected.")
+                    }
+
+                    for (entry in diffs) {
+                        formatter.format(entry)
+                    }
+                    
+                    val diffResult = out.toString("UTF-8")
+                    Result.success(diffResult.ifBlank { "No changes detected." })
+                }
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun readFile(repo: GitRepo, path: String): Result<String> = withContext(Dispatchers.IO) {
+        try {
+            val file = File(repo.localPath, path)
+            if (file.exists()) {
+                Result.success(file.readText())
+            } else {
+                Result.failure(Exception("File not found"))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun writeFile(repo: GitRepo, path: String, content: String): Result<Unit> = withContext(Dispatchers.IO) {
+        try {
+            val file = File(repo.localPath, path)
+            file.writeText(content)
+            Result.success(Unit)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun listFiles(repo: GitRepo, relativePath: String = ""): List<RepoFile> = withContext(Dispatchers.IO) {
+        val targetDir = if (relativePath.isEmpty()) repo.localPath else File(repo.localPath, relativePath)
+        val result = mutableListOf<RepoFile>()
+        targetDir.listFiles()?.forEach { file ->
+            if (file.name == ".git") return@forEach
+            result.add(
+                RepoFile(
+                    name = file.name,
+                    path = if (relativePath.isEmpty()) file.name else "$relativePath/${file.name}",
+                    isDirectory = file.isDirectory
+                )
+            )
+        }
+        result.sortedWith(compareBy({ !it.isDirectory }, { it.name }))
+    }
+
+    suspend fun stageFile(repo: GitRepo, path: String): Result<Unit> = withContext(Dispatchers.IO) {
+        try {
+            Git.open(repo.localPath).use { git ->
+                git.add().addFilepattern(path).call()
+                Result.success(Unit)
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun unstageFile(repo: GitRepo, path: String): Result<Unit> = withContext(Dispatchers.IO) {
+        try {
+            Git.open(repo.localPath).use { git ->
+                git.reset().addPath(path).call()
+                Result.success(Unit)
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun rollbackFile(repo: GitRepo, path: String): Result<Unit> = withContext(Dispatchers.IO) {
+        try {
+            Git.open(repo.localPath).use { git ->
+                git.checkout().addPath(path).call()
+                Result.success(Unit)
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun commit(
+        repo: GitRepo, 
+        message: String,
+        authorName: String? = null,
+        authorEmail: String? = null
+    ): Result<Unit> = withContext(Dispatchers.IO) {
         try {
             Git.open(repo.localPath).use { git ->
                 git.add().addFilepattern(".").call() // Auto-add all
-                git.commit().setMessage(message).call()
+                val commitCommand = git.commit().setMessage(message)
+                
+                if (!authorName.isNullOrBlank() && !authorEmail.isNullOrBlank()) {
+                    commitCommand.setAuthor(authorName, authorEmail)
+                    commitCommand.setCommitter(authorName, authorEmail)
+                }
+                
+                commitCommand.call()
                 Result.success(Unit)
             }
         } catch (e: Exception) {
@@ -132,3 +317,9 @@ class GitManager(private val rootDir: File) {
         }
     }
 }
+
+data class RepoFile(
+    val name: String,
+    val path: String,
+    val isDirectory: Boolean
+)

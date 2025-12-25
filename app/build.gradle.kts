@@ -61,6 +61,9 @@ dependencies {
     implementation(libs.androidx.ui.tooling.preview)
     implementation(libs.androidx.material3)
     
+    // Icons
+    implementation(libs.androidx.compose.material.icons.extended)
+    
     // Adaptive
     implementation(libs.androidx.material3.window.size)
     implementation(libs.androidx.material3.adaptive)
@@ -81,6 +84,9 @@ dependencies {
 
     // Git
     implementation(libs.jgit)
+
+    // Image Loading
+    implementation(libs.coil.compose)
 
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)

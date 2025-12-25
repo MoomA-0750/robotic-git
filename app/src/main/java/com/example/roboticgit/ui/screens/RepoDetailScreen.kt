@@ -1,21 +1,41 @@
 package com.example.roboticgit.ui.screens
 
-import android.os.Environment
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.automirrored.filled.Undo
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.viewmodel.compose.viewModel
+import coil.compose.AsyncImage
+import com.example.roboticgit.data.AuthManager
+import com.example.roboticgit.data.RepoFile
+import com.example.roboticgit.data.model.FileState
+import com.example.roboticgit.data.model.FileStatus
 import com.example.roboticgit.ui.viewmodel.RepoDetailUiState
 import com.example.roboticgit.ui.viewmodel.RepoDetailViewModel
 import com.example.roboticgit.ui.viewmodel.RepoDetailViewModelFactory
+import kotlinx.coroutines.launch
 import org.eclipse.jgit.revwalk.RevCommit
 import java.io.File
 import java.util.Date
@@ -26,16 +46,25 @@ fun RepoDetailScreen(
     repoName: String,
     onBack: () -> Unit
 ) {
-    val rootDir = remember {
-        File(Environment.getExternalStorageDirectory(), "RoboticGit")
-    }
+    val context = LocalContext.current
+    val authManager = remember { AuthManager(context) }
+    val rootDir = remember { File(authManager.getDefaultCloneDir()) }
 
     val viewModel: RepoDetailViewModel = viewModel(
-        factory = RepoDetailViewModelFactory(rootDir, repoName)
+        factory = RepoDetailViewModelFactory(authManager, rootDir, repoName)
     )
     val uiState by viewModel.uiState.collectAsState()
     
     var commitMessage by remember { mutableStateOf("") }
+    var selectedTab by remember { mutableIntStateOf(0) }
+    
+    var diffFile by remember { mutableStateOf<FileStatus?>(null) }
+    var diffText by remember { mutableStateOf<String?>(null) }
+    
+    var editingPath by remember { mutableStateOf<String?>(null) }
+    var editingText by remember { mutableStateOf("") }
+    
+    val scope = rememberCoroutineScope()
 
     Scaffold(
         topBar = {
@@ -43,7 +72,7 @@ fun RepoDetailScreen(
                 title = { Text(repoName) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
                 },
                 actions = {
@@ -56,52 +85,204 @@ fun RepoDetailScreen(
             )
         }
     ) { paddingValues ->
-        Box(modifier = Modifier.padding(paddingValues).fillMaxSize()) {
-            when (val state = uiState) {
-                is RepoDetailUiState.Loading -> {
-                     CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
+        Column(modifier = Modifier.padding(paddingValues).fillMaxSize()) {
+            TabRow(selectedTabIndex = selectedTab) {
+                Tab(selected = selectedTab == 0, onClick = { selectedTab = 0 }) {
+                    Text("Changes", modifier = Modifier.padding(16.dp))
                 }
-                is RepoDetailUiState.Success -> {
-                    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-                        // Status Section
-                        Card(
-                            modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp)
-                        ) {
-                            Column(modifier = Modifier.padding(16.dp)) {
-                                Text("Status", style = MaterialTheme.typography.titleMedium)
-                                Text(state.status.ifEmpty { "Clean" })
-                                
-                                Spacer(modifier = Modifier.height(8.dp))
-                                OutlinedTextField(
-                                    value = commitMessage,
-                                    onValueChange = { commitMessage = it },
-                                    label = { Text("Commit Message") },
-                                    modifier = Modifier.fillMaxWidth()
-                                )
-                                Button(
-                                    onClick = { 
-                                        viewModel.commit(commitMessage)
-                                        commitMessage = ""
-                                    },
-                                    enabled = commitMessage.isNotBlank(),
-                                    modifier = Alignment.End.let { Modifier.align(it) }
-                                ) {
-                                    Text("Commit")
-                                }
-                            }
-                        }
+                Tab(selected = selectedTab == 1, onClick = { selectedTab = 1 }) {
+                    Text("Files", modifier = Modifier.padding(16.dp))
+                }
+                Tab(selected = selectedTab == 2, onClick = { selectedTab = 2 }) {
+                    Text("History", modifier = Modifier.padding(16.dp))
+                }
+            }
 
-                        Text("Commits", style = MaterialTheme.typography.titleLarge)
-                        LazyColumn {
-                            items(state.commits) { commit ->
-                                CommitItem(commit)
-                                HorizontalDivider()
-                            }
+            Box(modifier = Modifier.weight(1f)) {
+                when (val state = uiState) {
+                    is RepoDetailUiState.Loading -> {
+                         CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
+                    }
+                    is RepoDetailUiState.Success -> {
+                        when (selectedTab) {
+                            0 -> ChangesView(
+                                fileStatuses = state.fileStatuses,
+                                commitMessage = commitMessage,
+                                onMessageChange = { commitMessage = it },
+                                onCommit = { 
+                                    viewModel.commit(commitMessage)
+                                    commitMessage = ""
+                                },
+                                onToggleStage = viewModel::toggleStage,
+                                onRollback = viewModel::rollbackFile,
+                                onFileClick = { file ->
+                                    diffFile = file
+                                    scope.launch {
+                                        diffText = viewModel.getFileDiff(file)
+                                    }
+                                },
+                                onEditClick = { file ->
+                                    scope.launch {
+                                        editingText = viewModel.readFile(file.path)
+                                        editingPath = file.path
+                                    }
+                                }
+                            )
+                            1 -> FilesView(
+                                viewModel = viewModel,
+                                onFileClick = { path ->
+                                    scope.launch {
+                                        editingText = viewModel.readFile(path)
+                                        editingPath = path
+                                    }
+                                }
+                            )
+                            2 -> HistoryView(
+                                commits = state.commits,
+                                getGravatarUrl = viewModel::getGravatarUrl
+                            )
                         }
                     }
+                    is RepoDetailUiState.Error -> {
+                        Text("Error: ${state.message}", color = MaterialTheme.colorScheme.error)
+                    }
                 }
-                is RepoDetailUiState.Error -> {
-                    Text("Error: ${state.message}", color = MaterialTheme.colorScheme.error)
+            }
+        }
+
+        if (diffFile != null) {
+            DiffDialog(
+                fileName = diffFile?.path ?: "",
+                diffText = diffText,
+                onDismiss = {
+                    diffFile = null
+                    diffText = null
+                }
+            )
+        }
+
+        if (editingPath != null) {
+            EditorDialog(
+                fileName = editingPath!!.substringAfterLast("/"),
+                content = editingText,
+                onContentChange = { editingText = it },
+                onSave = {
+                    viewModel.saveFile(editingPath!!, editingText)
+                    editingPath = null
+                },
+                onDismiss = { editingPath = null }
+            )
+        }
+    }
+}
+
+@Composable
+fun FilesView(
+    viewModel: RepoDetailViewModel,
+    onFileClick: (String) -> Unit
+) {
+    var currentPath by remember { mutableStateOf("") }
+    var files by remember { mutableStateOf<List<RepoFile>>(emptyList()) }
+    val scope = rememberCoroutineScope()
+
+    LaunchedEffect(currentPath) {
+        files = viewModel.listFiles(currentPath)
+    }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        // Path breadcrumbs
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(8.dp)
+                .horizontalScroll(rememberScrollState()),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            TextButton(onClick = { currentPath = "" }) { Text("root") }
+            currentPath.split("/").filter { it.isNotEmpty() }.forEachIndexed { index, segment ->
+                Text("/")
+                TextButton(onClick = {
+                    currentPath = currentPath.split("/").take(index + 1).joinToString("/")
+                }) {
+                    Text(segment)
+                }
+            }
+        }
+
+        LazyColumn(modifier = Modifier.weight(1f)) {
+            items(files) { file ->
+                ListItem(
+                    headlineContent = { Text(file.name) },
+                    leadingContent = {
+                        Icon(
+                            if (file.isDirectory) Icons.Default.Folder else Icons.Default.Description,
+                            contentDescription = null,
+                            tint = if (file.isDirectory) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
+                        )
+                    },
+                    modifier = Modifier.clickable {
+                        if (file.isDirectory) {
+                            currentPath = file.path
+                        } else {
+                            onFileClick(file.path)
+                        }
+                    }
+                )
+                HorizontalDivider()
+            }
+        }
+    }
+}
+
+@Composable
+fun ChangesView(
+    fileStatuses: List<FileStatus>,
+    commitMessage: String,
+    onMessageChange: (String) -> Unit,
+    onCommit: () -> Unit,
+    onToggleStage: (FileStatus) -> Unit,
+    onRollback: (FileStatus) -> Unit,
+    onFileClick: (FileStatus) -> Unit,
+    onEditClick: (FileStatus) -> Unit
+) {
+    Column(modifier = Modifier.fillMaxSize()) {
+        if (fileStatuses.isEmpty()) {
+            Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                Text("No changes detected")
+            }
+        } else {
+            LazyColumn(modifier = Modifier.weight(1f)) {
+                items(fileStatuses) { fileStatus ->
+                    FileStatusItem(
+                        fileStatus = fileStatus,
+                        onToggleStage = { onToggleStage(fileStatus) },
+                        onRollback = { onRollback(fileStatus) },
+                        onClick = { onFileClick(fileStatus) },
+                        onEditClick = { onEditClick(fileStatus) }
+                    )
+                    HorizontalDivider()
+                }
+            }
+        }
+
+        Card(
+            modifier = Modifier.fillMaxWidth().padding(16.dp),
+            elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                OutlinedTextField(
+                    value = commitMessage,
+                    onValueChange = onMessageChange,
+                    label = { Text("Commit Message") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Button(
+                    onClick = onCommit,
+                    enabled = commitMessage.isNotBlank() && fileStatuses.any { it.isStaged },
+                    modifier = Modifier.align(Alignment.End)
+                ) {
+                    Text("Commit Staged")
                 }
             }
         }
@@ -109,11 +290,190 @@ fun RepoDetailScreen(
 }
 
 @Composable
-fun CommitItem(commit: RevCommit) {
+fun FileStatusItem(
+    fileStatus: FileStatus,
+    onToggleStage: () -> Unit,
+    onRollback: () -> Unit,
+    onClick: () -> Unit,
+    onEditClick: () -> Unit
+) {
+    val color = when (fileStatus.state) {
+        FileState.ADDED, FileState.UNTRACKED -> Color(0xFF4CAF50)
+        FileState.MODIFIED -> Color(0xFF2196F3)
+        FileState.REMOVED, FileState.DELETED, FileState.MISSING -> Color(0xFFF44336)
+        else -> MaterialTheme.colorScheme.onSurface
+    }
+
+    ListItem(
+        headlineContent = { Text(fileStatus.path) },
+        supportingContent = { 
+            Text(fileStatus.state.name, color = color, style = MaterialTheme.typography.bodySmall) 
+        },
+        leadingContent = {
+            Checkbox(
+                checked = fileStatus.isStaged,
+                onCheckedChange = { onToggleStage() }
+            )
+        },
+        trailingContent = {
+            Row {
+                IconButton(onClick = onEditClick) {
+                    Icon(Icons.Default.Edit, contentDescription = "Edit")
+                }
+                if (!fileStatus.isStaged && fileStatus.state != FileState.UNTRACKED) {
+                    IconButton(onClick = onRollback) {
+                        Icon(Icons.AutoMirrored.Filled.Undo, contentDescription = "Rollback", tint = MaterialTheme.colorScheme.error)
+                    }
+                }
+            }
+        },
+        modifier = Modifier.clickable { onClick() }
+    )
+}
+
+@Composable
+fun DiffDialog(
+    fileName: String,
+    diffText: String?,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Diff: $fileName") },
+        text = {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 400.dp)
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                    .padding(8.dp)
+            ) {
+                if (diffText == null) {
+                    CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
+                } else {
+                    Column(
+                        modifier = Modifier
+                            .verticalScroll(rememberScrollState())
+                    ) {
+                        diffText.split("\n").forEach { line ->
+                            val bgColor = when {
+                                line.startsWith("+") -> Color(0xFFE6FFEC)
+                                line.startsWith("-") -> Color(0xFFFFEBEE)
+                                else -> Color.Transparent
+                            }
+                            val textColor = when {
+                                line.startsWith("+") -> Color(0xFF2E7D32)
+                                line.startsWith("-") -> Color(0xFFC62828)
+                                else -> MaterialTheme.colorScheme.onSurfaceVariant
+                            }
+                            Text(
+                                text = line,
+                                color = textColor,
+                                fontSize = 12.sp,
+                                fontFamily = FontFamily.Monospace,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(bgColor)
+                                    .padding(horizontal = 4.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Close")
+            }
+        }
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun EditorDialog(
+    fileName: String,
+    content: String,
+    onContentChange: (String) -> Unit,
+    onSave: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = MaterialTheme.colorScheme.background
+        ) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                TopAppBar(
+                    title = { Text("Edit: $fileName", maxLines = 1) },
+                    navigationIcon = {
+                        IconButton(onClick = onDismiss) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Close")
+                        }
+                    },
+                    actions = {
+                        TextButton(onClick = onSave) {
+                            Text("SAVE")
+                        }
+                    }
+                )
+                
+                TextField(
+                    value = content,
+                    onValueChange = onContentChange,
+                    modifier = Modifier.fillMaxSize(),
+                    textStyle = LocalTextStyle.current.copy(
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 14.sp
+                    ),
+                    placeholder = { Text("File is empty") },
+                    colors = TextFieldDefaults.colors(
+                        focusedContainerColor = Color.Transparent,
+                        unfocusedContainerColor = Color.Transparent,
+                        focusedIndicatorColor = Color.Transparent,
+                        unfocusedIndicatorColor = Color.Transparent
+                    )
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun HistoryView(
+    commits: List<RevCommit>,
+    getGravatarUrl: (String) -> String
+) {
+    LazyColumn(modifier = Modifier.fillMaxSize()) {
+        items(commits) { commit ->
+            CommitItem(commit, getGravatarUrl)
+            HorizontalDivider()
+        }
+    }
+}
+
+@Composable
+fun CommitItem(
+    commit: RevCommit,
+    getGravatarUrl: (String) -> String
+) {
+    val email = commit.authorIdent.emailAddress
     ListItem(
         headlineContent = { Text(commit.shortMessage) },
         supportingContent = { 
             Text("${commit.authorIdent.name} - ${Date(commit.commitTime * 1000L)}") 
+        },
+        leadingContent = {
+            AsyncImage(
+                model = getGravatarUrl(email),
+                contentDescription = "Author Avatar",
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(CircleShape)
+            )
         }
     )
 }
