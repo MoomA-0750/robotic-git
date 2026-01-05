@@ -8,5 +8,6 @@ data class GitRepo(
     val localPath: File,
     val isCloning: Boolean = false,
     val progress: Float = 0f,
-    val statusMessage: String = ""
+    val statusMessage: String = "",
+    val lastCommitTime: Long = 0L
 )

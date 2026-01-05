@@ -2,12 +2,14 @@ package com.example.roboticgit.ui
 
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationRail
@@ -21,6 +23,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -121,6 +125,8 @@ fun RoboticGitNavigationWrapper(
             }
             
             Scaffold(
+                containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                contentWindowInsets = WindowInsets(0, 0, 0, 0),
                 bottomBar = {
                     if (navigationType == RoboticGitNavigationType.BOTTOM_NAVIGATION && !isDetailRoute) {
                         AppNavigationContent(
@@ -154,7 +160,10 @@ fun AppNavigationContent(
     navigateToSettings: () -> Unit
 ) {
     if (navigationType == RoboticGitNavigationType.BOTTOM_NAVIGATION) {
-        NavigationBar {
+        NavigationBar(
+            containerColor = Color.Transparent,
+            tonalElevation = 0.dp
+        ) {
             NavigationBarItem(
                 selected = currentRoute == RoboticGitDestinations.HOME_ROUTE,
                 onClick = navigateToHome,

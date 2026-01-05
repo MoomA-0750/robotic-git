@@ -9,6 +9,8 @@ import com.example.roboticgit.data.GitManager
 import com.example.roboticgit.data.model.Account
 import com.example.roboticgit.data.model.GitRepo
 import com.example.roboticgit.data.model.RemoteRepo
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -41,9 +43,14 @@ class HomeViewModel(
     private val _selectedAccount = MutableStateFlow<Account?>(null)
     val selectedAccount: StateFlow<Account?> = _selectedAccount.asStateFlow()
 
+    private val _isRefreshing = MutableStateFlow(false)
+    val isRefreshing: StateFlow<Boolean> = _isRefreshing.asStateFlow()
+
+    private val _selectedRepos = MutableStateFlow<Set<String>>(emptySet())
+    val selectedRepos: StateFlow<Set<String>> = _selectedRepos.asStateFlow()
+
     private val json = Json { ignoreUnknownKeys = true }
     
-    // Dynamic GitManager based on current settings
     private fun getGitManager(): GitManager {
         return GitManager(File(authManager.getDefaultCloneDir()))
     }
@@ -51,6 +58,20 @@ class HomeViewModel(
     init {
         loadRepositories()
         _selectedAccount.value = _accounts.value.firstOrNull()
+    }
+
+    fun toggleRepoSelection(repoName: String) {
+        _selectedRepos.update { current ->
+            if (current.contains(repoName)) {
+                current - repoName
+            } else {
+                current + repoName
+            }
+        }
+    }
+
+    fun clearSelection() {
+        _selectedRepos.value = emptySet()
     }
 
     fun refreshAccounts() {
@@ -75,6 +96,77 @@ class HomeViewModel(
                 _uiState.value = HomeUiState.Success(repoList)
             } catch (e: Exception) {
                  _uiState.value = HomeUiState.Error(e.message ?: "Unknown error")
+            }
+        }
+    }
+
+    fun refreshAllRepositories() {
+        refreshSelectedRepositories(_repos.value.map { it.name }.toSet())
+    }
+
+    fun refreshSelectedRepositories(repoNames: Set<String>) {
+        val account = _selectedAccount.value
+        val token = account?.token
+        val gitManager = getGitManager()
+
+        viewModelScope.launch {
+            _isRefreshing.value = true
+            try {
+                val reposToFetch = _repos.value.filter { repoNames.contains(it.name) }
+                val fetchTasks = reposToFetch.map { repo ->
+                    async {
+                        gitManager.fetch(repo, token)
+                    }
+                }
+                fetchTasks.awaitAll()
+                loadRepositories()
+                if (repoNames.size < _repos.value.size) {
+                    clearSelection()
+                }
+            } catch (e: Exception) {
+                // Handle error
+            } finally {
+                _isRefreshing.value = false
+            }
+        }
+    }
+
+    fun pullSelectedRepositories() {
+        val repoNames = _selectedRepos.value
+        val account = _selectedAccount.value
+        val token = account?.token
+        val gitManager = getGitManager()
+
+        viewModelScope.launch {
+            _isRefreshing.value = true
+            try {
+                val reposToPull = _repos.value.filter { repoNames.contains(it.name) }
+                val pullTasks = reposToPull.map { repo ->
+                    async {
+                        gitManager.pull(repo, token)
+                    }
+                }
+                pullTasks.awaitAll()
+                loadRepositories()
+                clearSelection()
+            } catch (e: Exception) {
+            } finally {
+                _isRefreshing.value = false
+            }
+        }
+    }
+
+    fun deleteSelectedRepositories() {
+        val repoNames = _selectedRepos.value
+        viewModelScope.launch {
+            try {
+                val reposToDelete = _repos.value.filter { repoNames.contains(it.name) }
+                reposToDelete.forEach { repo ->
+                    repo.localPath.deleteRecursively()
+                }
+                loadRepositories()
+                clearSelection()
+            } catch (e: Exception) {
             }
         }
     }
@@ -111,7 +203,6 @@ class HomeViewModel(
         val token = account?.token
         
         viewModelScope.launch {
-             // Add a placeholder for the cloning repo
              val placeholder = GitRepo(
                  name = name,
                  path = "",
@@ -134,7 +225,6 @@ class HomeViewModel(
              if (result.isSuccess) {
                  loadRepositories()
              } else {
-                 // Remove placeholder on failure
                  _repos.update { current -> current.filterNot { it.name == name && it.isCloning } }
              }
         }

@@ -33,7 +33,19 @@ class GitManager(private val rootDir: File) {
         val repos = mutableListOf<GitRepo>()
         rootDir.listFiles()?.forEach { file ->
             if (file.isDirectory && File(file, ".git").exists()) {
-                repos.add(GitRepo(file.name, file.absolutePath, file))
+                val lastCommitTime = try {
+                    Git.open(file).use { git ->
+                        val head = git.repository.resolve(Constants.HEAD)
+                        if (head != null) {
+                            val revWalk = RevWalk(git.repository)
+                            val commit = revWalk.parseCommit(head)
+                            commit.commitTime * 1000L // convert to milliseconds
+                        } else 0L
+                    }
+                } catch (e: Exception) {
+                    0L
+                }
+                repos.add(GitRepo(file.name, file.absolutePath, file, lastCommitTime = lastCommitTime))
             }
         }
         repos
@@ -85,10 +97,32 @@ class GitManager(private val rootDir: File) {
                 cloneCommand.setCredentialsProvider(UsernamePasswordCredentialsProvider("token", token))
             }
 
-            cloneCommand.call().close()
-            Result.success(GitRepo(name, destination.absolutePath, destination))
+            cloneCommand.call().use { git ->
+                val head = git.repository.resolve(Constants.HEAD)
+                val lastCommitTime = if (head != null) {
+                    val revWalk = RevWalk(git.repository)
+                    val commit = revWalk.parseCommit(head)
+                    commit.commitTime * 1000L
+                } else 0L
+                Result.success(GitRepo(name, destination.absolutePath, destination, lastCommitTime = lastCommitTime))
+            }
         } catch (e: GitAPIException) {
             Result.failure(e)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun fetch(repo: GitRepo, token: String? = null): Result<Unit> = withContext(Dispatchers.IO) {
+        try {
+            Git.open(repo.localPath).use { git ->
+                val fetchCommand = git.fetch()
+                if (!token.isNullOrBlank()) {
+                    fetchCommand.setCredentialsProvider(UsernamePasswordCredentialsProvider("token", token))
+                }
+                fetchCommand.call()
+                Result.success(Unit)
+            }
         } catch (e: Exception) {
             Result.failure(e)
         }
