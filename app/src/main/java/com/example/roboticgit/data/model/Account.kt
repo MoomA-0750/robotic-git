@@ -14,5 +14,6 @@ data class Account(
     val name: String,
     val type: AccountType,
     val token: String,
+    val avatarUrl: String? = null,
     val baseUrl: String? = null // For Gitea
 )

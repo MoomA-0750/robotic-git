@@ -119,7 +119,8 @@ class SettingsViewModel(private val authManager: AuthManager) : ViewModel() {
                 val account = Account(
                     name = user.login,
                     type = AccountType.GITHUB,
-                    token = token
+                    token = token,
+                    avatarUrl = user.avatarUrl
                 )
                 authManager.addAccount(account)
                 _accounts.value = authManager.getAccounts()
@@ -130,12 +131,17 @@ class SettingsViewModel(private val authManager: AuthManager) : ViewModel() {
         }
     }
 
-    fun addGitHubAccountManual(name: String, token: String) {
+    fun addGitHubAccountManual(token: String) {
         viewModelScope.launch {
             _validationStatus.value = ValidationStatus.Loading
             try {
-                service.getUserRepos("Bearer $token", perPage = 1)
-                val account = Account(name = name, type = AccountType.GITHUB, token = token)
+                val user = service.getUser("Bearer $token")
+                val account = Account(
+                    name = user.login, 
+                    type = AccountType.GITHUB, 
+                    token = token,
+                    avatarUrl = user.avatarUrl
+                )
                 authManager.addAccount(account)
                 _accounts.value = authManager.getAccounts()
                 _validationStatus.value = ValidationStatus.Success

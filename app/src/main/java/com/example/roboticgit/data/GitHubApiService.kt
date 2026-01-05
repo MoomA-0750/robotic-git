@@ -15,7 +15,8 @@ data class GitHubTokenResponse(
 @Serializable
 data class GitHubUser(
     @SerialName("login") val login: String,
-    @SerialName("id") val id: Long
+    @SerialName("id") val id: Long,
+    @SerialName("avatar_url") val avatarUrl: String
 )
 
 interface GitHubApiService {

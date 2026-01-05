@@ -29,7 +29,6 @@ fun SettingsScreen(
 ) {
     val defaultCloneDir by viewModel.defaultCloneDir.collectAsState()
     val themeMode by viewModel.themeMode.collectAsState()
-    val dynamicColorEnabled by viewModel.dynamicColorEnabled.collectAsState()
     val gitUserName by viewModel.gitUserName.collectAsState()
     val gitUserEmail by viewModel.gitUserEmail.collectAsState()
     
@@ -101,19 +100,6 @@ fun SettingsScreen(
                     supportingContent = { Text(themeMode.name) },
                     leadingContent = { Icon(themeIcon, contentDescription = null) },
                     modifier = Modifier.clickable { showThemeDialog = true }
-                )
-
-                // Dynamic Color Toggle
-                ListItem(
-                    headlineContent = { Text("Dynamic Color") },
-                    supportingContent = { Text("Use system wallpaper colors (Android 12+)") },
-                    leadingContent = { Icon(Icons.Default.Palette, contentDescription = null) },
-                    trailingContent = {
-                        Switch(
-                            checked = dynamicColorEnabled,
-                            onCheckedChange = { viewModel.onDynamicColorChange(it) }
-                        )
-                    }
                 )
             }
 
