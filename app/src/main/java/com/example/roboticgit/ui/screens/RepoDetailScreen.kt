@@ -24,11 +24,11 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.OffsetMapping
 import androidx.compose.ui.text.input.TransformedText
 import androidx.compose.ui.text.input.VisualTransformation
@@ -41,6 +41,7 @@ import coil.compose.AsyncImage
 import com.example.roboticgit.data.AuthManager
 import com.example.roboticgit.data.CommitChange
 import com.example.roboticgit.data.RepoFile
+import com.example.roboticgit.data.model.BranchInfo
 import com.example.roboticgit.data.model.FileState
 import com.example.roboticgit.data.model.FileStatus
 import com.example.roboticgit.ui.viewmodel.RepoDetailUiState
@@ -65,6 +66,7 @@ fun RepoDetailScreen(
         factory = RepoDetailViewModelFactory(authManager, rootDir, repoName)
     )
     val uiState by viewModel.uiState.collectAsState()
+    val errorMessage by viewModel.errorMessage.collectAsState()
     
     var commitMessage by remember { mutableStateOf("") }
     var selectedTab by remember { mutableIntStateOf(0) }
@@ -77,13 +79,28 @@ fun RepoDetailScreen(
 
     var selectedCommit by remember { mutableStateOf<RevCommit?>(null) }
     var commitChanges by remember { mutableStateOf<List<CommitChange>>(emptyList()) }
+
+    var showCreateBranchDialog by remember { mutableStateOf(false) }
+    var pendingCheckoutBranch by remember { mutableStateOf<String?>(null) }
     
     val scope = rememberCoroutineScope()
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(repoName) },
+                title = { 
+                    Column {
+                        Text(repoName)
+                        if (uiState is RepoDetailUiState.Success) {
+                            val state = uiState as RepoDetailUiState.Success
+                            Text(
+                                text = state.currentBranch ?: "No branch",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+                },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
@@ -97,6 +114,13 @@ fun RepoDetailScreen(
                     TextButton(onClick = { viewModel.push() }) { Text("Push") }
                 }
             )
+        },
+        floatingActionButton = {
+            if (selectedTab == 3) {
+                FloatingActionButton(onClick = { showCreateBranchDialog = true }) {
+                    Icon(Icons.Default.Add, contentDescription = "Create Branch")
+                }
+            }
         }
     ) { paddingValues ->
         Column(modifier = Modifier.padding(paddingValues).fillMaxSize()) {
@@ -109,6 +133,9 @@ fun RepoDetailScreen(
                 }
                 Tab(selected = selectedTab == 2, onClick = { selectedTab = 2 }) {
                     Text("History", modifier = Modifier.padding(16.dp))
+                }
+                Tab(selected = selectedTab == 3, onClick = { selectedTab = 3 }) {
+                    Text("Branches", modifier = Modifier.padding(16.dp))
                 }
             }
 
@@ -161,6 +188,14 @@ fun RepoDetailScreen(
                                     }
                                 }
                             )
+                            3 -> BranchesView(
+                                branches = state.branches,
+                                onBranchClick = { branch ->
+                                    if (!branch.isCurrent) {
+                                        viewModel.checkoutBranch(branch.name)
+                                    }
+                                }
+                            )
                         }
                     }
                     is RepoDetailUiState.Error -> {
@@ -168,6 +203,47 @@ fun RepoDetailScreen(
                     }
                 }
             }
+        }
+
+        errorMessage?.let { msg ->
+            if (msg == "UNCOMMITTED_CHANGES") {
+                AlertDialog(
+                    onDismissRequest = { viewModel.clearError() },
+                    title = { Text("Uncommitted Changes") },
+                    text = { Text("You have uncommitted changes. Please commit or stash them before switching branches, or force checkout (Warning: this will lose changes).") },
+                    confirmButton = {
+                        TextButton(onClick = { 
+                            // In Task 3 we don't have force UI yet, but we could add it here
+                            viewModel.clearError()
+                        }) { Text("OK") }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { 
+                            // Example: force checkout logic could go here
+                            viewModel.clearError()
+                        }) { Text("Force (Stub)") }
+                    }
+                )
+            } else {
+                AlertDialog(
+                    onDismissRequest = { viewModel.clearError() },
+                    title = { Text("Error") },
+                    text = { Text(msg) },
+                    confirmButton = {
+                        TextButton(onClick = { viewModel.clearError() }) { Text("OK") }
+                    }
+                )
+            }
+        }
+
+        if (showCreateBranchDialog) {
+            CreateBranchDialog(
+                onDismiss = { showCreateBranchDialog = false },
+                onCreate = { name ->
+                    viewModel.createBranch(name)
+                    showCreateBranchDialog = false
+                }
+            )
         }
 
         if (diffFile != null) {
@@ -212,6 +288,99 @@ fun RepoDetailScreen(
             )
         }
     }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun BranchesView(
+    branches: List<BranchInfo>,
+    onBranchClick: (BranchInfo) -> Unit
+) {
+    var selectedBranchTab by remember { mutableIntStateOf(0) }
+    val filteredBranches = remember(branches, selectedBranchTab) {
+        if (selectedBranchTab == 0) {
+            branches.filter { !it.isRemote }
+        } else {
+            branches.filter { it.isRemote }
+        }
+    }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        SecondaryTabRow(selectedTabIndex = selectedBranchTab) {
+            Tab(selected = selectedBranchTab == 0, onClick = { selectedBranchTab = 0 }) {
+                Text("Local", modifier = Modifier.padding(8.dp))
+            }
+            Tab(selected = selectedBranchTab == 1, onClick = { selectedBranchTab = 1 }) {
+                Text("Remote", modifier = Modifier.padding(8.dp))
+            }
+        }
+
+        LazyColumn(modifier = Modifier.weight(1f)) {
+            items(filteredBranches) { branch ->
+                ListItem(
+                    headlineContent = { 
+                        Text(
+                            text = branch.name,
+                            fontWeight = if (branch.isCurrent) FontWeight.Bold else FontWeight.Normal,
+                            color = if (branch.isCurrent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                        )
+                    },
+                    supportingContent = {
+                        branch.lastCommitMessage?.let { Text(it, maxLines = 1) }
+                    },
+                    leadingContent = {
+                        Icon(
+                            imageVector = if (branch.isRemote) Icons.Default.Cloud else Icons.Default.AccountTree,
+                            contentDescription = null,
+                            tint = if (branch.isCurrent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    },
+                    trailingContent = {
+                        if (branch.isCurrent) {
+                            Icon(Icons.Default.Check, contentDescription = "Current", tint = MaterialTheme.colorScheme.primary)
+                        }
+                    },
+                    modifier = Modifier.clickable { onBranchClick(branch) }
+                )
+                HorizontalDivider()
+            }
+        }
+    }
+}
+
+@Composable
+fun CreateBranchDialog(
+    onDismiss: () -> Unit,
+    onCreate: (String) -> Unit
+) {
+    var branchName by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Create Branch") },
+        text = {
+            OutlinedTextField(
+                value = branchName,
+                onValueChange = { branchName = it },
+                label = { Text("Branch Name") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+        },
+        confirmButton = {
+            Button(
+                onClick = { onCreate(branchName) },
+                enabled = branchName.isNotBlank()
+            ) {
+                Text("Create")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
+    )
 }
 
 @Composable

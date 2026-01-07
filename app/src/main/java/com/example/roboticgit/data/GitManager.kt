@@ -1,9 +1,11 @@
 package com.example.roboticgit.data
 
+import com.example.roboticgit.data.model.BranchInfo
 import com.example.roboticgit.data.model.FileState
 import com.example.roboticgit.data.model.FileStatus
 import com.example.roboticgit.data.model.GitRepo
 import org.eclipse.jgit.api.Git
+import org.eclipse.jgit.api.ListBranchCommand
 import org.eclipse.jgit.api.errors.GitAPIException
 import org.eclipse.jgit.diff.DiffEntry
 import org.eclipse.jgit.diff.DiffFormatter
@@ -403,6 +405,90 @@ class GitManager(private val rootDir: File) {
             }
         } catch (e: Exception) {
             Result.failure(e)
+        }
+    }
+
+    suspend fun getCurrentBranch(repo: GitRepo): String? = withContext(Dispatchers.IO) {
+        try {
+            Git.open(repo.localPath).use { git ->
+                git.repository.branch
+            }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    suspend fun listBranches(repo: GitRepo): Result<List<BranchInfo>> = withContext(Dispatchers.IO) {
+        try {
+            Git.open(repo.localPath).use { git ->
+                val currentBranch = git.repository.branch
+                
+                val localBranches = git.branchList().call()
+                val remoteBranches = git.branchList().setListMode(ListBranchCommand.ListMode.REMOTE).call()
+                
+                val revWalk = RevWalk(git.repository)
+                
+                val result = (localBranches.map { it to false } + remoteBranches.map { it to true }).map { (ref, isRemote) ->
+                    val fullName = ref.name
+                    val name = if (isRemote) {
+                        fullName.removePrefix("refs/remotes/")
+                    } else {
+                        fullName.removePrefix("refs/heads/")
+                    }
+                    
+                    val commit = revWalk.parseCommit(ref.objectId)
+                    
+                    BranchInfo(
+                        name = name,
+                        fullName = fullName,
+                        isRemote = isRemote,
+                        isCurrent = !isRemote && name == currentBranch,
+                        lastCommitHash = commit.name,
+                        lastCommitMessage = commit.shortMessage,
+                        lastCommitTime = commit.commitTime * 1000L
+                    )
+                }
+                Result.success(result)
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun createBranch(repo: GitRepo, branchName: String, startPoint: String? = null): Result<Unit> = withContext(Dispatchers.IO) {
+        try {
+            Git.open(repo.localPath).use { git ->
+                val command = git.branchCreate().setName(branchName)
+                if (startPoint != null) {
+                    command.setStartPoint(startPoint)
+                }
+                command.call()
+                Result.success(Unit)
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun checkoutBranch(repo: GitRepo, branchName: String): Result<Unit> = withContext(Dispatchers.IO) {
+        try {
+            Git.open(repo.localPath).use { git ->
+                git.checkout().setName(branchName).call()
+                Result.success(Unit)
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun hasUncommittedChanges(repo: GitRepo): Boolean = withContext(Dispatchers.IO) {
+        try {
+            Git.open(repo.localPath).use { git ->
+                val status = git.status().call()
+                !status.isClean
+            }
+        } catch (e: Exception) {
+            false
         }
     }
 }

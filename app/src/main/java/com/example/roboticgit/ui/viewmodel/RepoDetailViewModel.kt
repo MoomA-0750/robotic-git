@@ -7,6 +7,7 @@ import com.example.roboticgit.data.AuthManager
 import com.example.roboticgit.data.CommitChange
 import com.example.roboticgit.data.GitManager
 import com.example.roboticgit.data.RepoFile
+import com.example.roboticgit.data.model.BranchInfo
 import com.example.roboticgit.data.model.FileStatus
 import com.example.roboticgit.data.model.GitRepo
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -26,6 +27,9 @@ class RepoDetailViewModel(
     private val _uiState = MutableStateFlow<RepoDetailUiState>(RepoDetailUiState.Loading)
     val uiState: StateFlow<RepoDetailUiState> = _uiState.asStateFlow()
 
+    private val _errorMessage = MutableStateFlow<String?>(null)
+    val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
+
     init {
         loadData()
     }
@@ -35,11 +39,15 @@ class RepoDetailViewModel(
             _uiState.value = RepoDetailUiState.Loading
             val commitsResult = gitManager.getCommits(repo)
             val fileStatusesResult = gitManager.getFileStatuses(repo)
+            val currentBranch = gitManager.getCurrentBranch(repo)
+            val branchesResult = gitManager.listBranches(repo)
 
             if (commitsResult.isSuccess && fileStatusesResult.isSuccess) {
                 _uiState.value = RepoDetailUiState.Success(
                     commits = commitsResult.getOrDefault(emptyList()),
-                    fileStatuses = fileStatusesResult.getOrDefault(emptyList())
+                    fileStatuses = fileStatusesResult.getOrDefault(emptyList()),
+                    currentBranch = currentBranch,
+                    branches = branchesResult.getOrDefault(emptyList())
                 )
             } else {
                 _uiState.value = RepoDetailUiState.Error(
@@ -111,26 +119,53 @@ class RepoDetailViewModel(
             if (result.isSuccess) {
                 loadData() // Refresh
             } else {
-                // Handle error
+                _errorMessage.value = result.exceptionOrNull()?.message
             }
         }
     }
 
     fun push() {
         viewModelScope.launch {
-             // In real app, show loading
              gitManager.push(repo)
-             // Handle result
         }
     }
 
      fun pull() {
         viewModelScope.launch {
-             // In real app, show loading
              gitManager.pull(repo)
              loadData()
-             // Handle result
         }
+    }
+
+    fun createBranch(name: String) {
+        viewModelScope.launch {
+            val result = gitManager.createBranch(repo, name)
+            if (result.isSuccess) {
+                loadData()
+            } else {
+                _errorMessage.value = result.exceptionOrNull()?.message
+            }
+        }
+    }
+
+    fun checkoutBranch(branchName: String, force: Boolean = false) {
+        viewModelScope.launch {
+            if (!force && gitManager.hasUncommittedChanges(repo)) {
+                _errorMessage.value = "UNCOMMITTED_CHANGES"
+                return@launch
+            }
+            
+            val result = gitManager.checkoutBranch(repo, branchName)
+            if (result.isSuccess) {
+                loadData()
+            } else {
+                _errorMessage.value = result.exceptionOrNull()?.message
+            }
+        }
+    }
+
+    fun clearError() {
+        _errorMessage.value = null
     }
 }
 
@@ -138,7 +173,9 @@ sealed class RepoDetailUiState {
     object Loading : RepoDetailUiState()
     data class Success(
         val commits: List<RevCommit>,
-        val fileStatuses: List<FileStatus>
+        val fileStatuses: List<FileStatus>,
+        val currentBranch: String? = null,
+        val branches: List<BranchInfo> = emptyList()
     ) : RepoDetailUiState()
     data class Error(val message: String) : RepoDetailUiState()
 }
