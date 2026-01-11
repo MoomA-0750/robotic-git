@@ -470,6 +470,20 @@ class GitManager(private val rootDir: File) {
         }
     }
 
+    suspend fun deleteBranch(repo: GitRepo, branchName: String, force: Boolean = false): Result<Unit> = withContext(Dispatchers.IO) {
+        try {
+            Git.open(repo.localPath).use { git ->
+                git.branchDelete()
+                    .setBranchNames(branchName)
+                    .setForce(force)
+                    .call()
+                Result.success(Unit)
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
     suspend fun checkoutBranch(repo: GitRepo, branchName: String): Result<Unit> = withContext(Dispatchers.IO) {
         try {
             Git.open(repo.localPath).use { git ->

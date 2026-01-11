@@ -164,6 +164,17 @@ class RepoDetailViewModel(
         }
     }
 
+    fun deleteBranch(branchName: String, force: Boolean = false) {
+        viewModelScope.launch {
+            val result = gitManager.deleteBranch(repo, branchName, force)
+            if (result.isSuccess) {
+                loadData()
+            } else {
+                _errorMessage.value = result.exceptionOrNull()?.message
+            }
+        }
+    }
+
     fun clearError() {
         _errorMessage.value = null
     }

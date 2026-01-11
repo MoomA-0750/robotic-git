@@ -81,7 +81,7 @@ fun RepoDetailScreen(
     var commitChanges by remember { mutableStateOf<List<CommitChange>>(emptyList()) }
 
     var showCreateBranchDialog by remember { mutableStateOf(false) }
-    var pendingCheckoutBranch by remember { mutableStateOf<String?>(null) }
+    var branchToDelete by remember { mutableStateOf<BranchInfo?>(null) }
     
     val scope = rememberCoroutineScope()
 
@@ -194,6 +194,9 @@ fun RepoDetailScreen(
                                     if (!branch.isCurrent) {
                                         viewModel.checkoutBranch(branch.name)
                                     }
+                                },
+                                onDeleteBranch = { branch ->
+                                    branchToDelete = branch
                                 }
                             )
                         }
@@ -246,6 +249,17 @@ fun RepoDetailScreen(
             )
         }
 
+        if (branchToDelete != null) {
+            DeleteBranchDialog(
+                branchName = branchToDelete!!.name,
+                onDismiss = { branchToDelete = null },
+                onConfirm = { force ->
+                    viewModel.deleteBranch(branchToDelete!!.name, force)
+                    branchToDelete = null
+                }
+            )
+        }
+
         if (diffFile != null) {
             DiffDialog(
                 fileName = diffFile ?: "",
@@ -294,7 +308,8 @@ fun RepoDetailScreen(
 @Composable
 fun BranchesView(
     branches: List<BranchInfo>,
-    onBranchClick: (BranchInfo) -> Unit
+    onBranchClick: (BranchInfo) -> Unit,
+    onDeleteBranch: (BranchInfo) -> Unit
 ) {
     var selectedBranchTab by remember { mutableIntStateOf(0) }
     val filteredBranches = remember(branches, selectedBranchTab) {
@@ -336,8 +351,14 @@ fun BranchesView(
                         )
                     },
                     trailingContent = {
-                        if (branch.isCurrent) {
-                            Icon(Icons.Default.Check, contentDescription = "Current", tint = MaterialTheme.colorScheme.primary)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (branch.isCurrent) {
+                                Icon(Icons.Default.Check, contentDescription = "Current", tint = MaterialTheme.colorScheme.primary)
+                            } else if (!branch.isRemote) {
+                                IconButton(onClick = { onDeleteBranch(branch) }) {
+                                    Icon(Icons.Default.Delete, contentDescription = "Delete Branch", tint = MaterialTheme.colorScheme.error)
+                                }
+                            }
                         }
                     },
                     modifier = Modifier.clickable { onBranchClick(branch) }
@@ -346,6 +367,43 @@ fun BranchesView(
             }
         }
     }
+}
+
+@Composable
+fun DeleteBranchDialog(
+    branchName: String,
+    onDismiss: () -> Unit,
+    onConfirm: (Boolean) -> Unit
+) {
+    var forceDelete by remember { mutableStateOf(false) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Delete Branch") },
+        text = {
+            Column {
+                Text("Are you sure you want to delete branch '$branchName'?")
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(checked = forceDelete, onCheckedChange = { forceDelete = it })
+                    Text("Force delete (Warning: may lose unmerged changes)")
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onConfirm(forceDelete) },
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+            ) {
+                Text("Delete")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
+    )
 }
 
 @Composable
