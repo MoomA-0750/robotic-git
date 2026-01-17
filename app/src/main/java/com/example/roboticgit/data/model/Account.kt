@@ -5,7 +5,7 @@ import java.util.UUID
 
 @Serializable
 enum class AccountType {
-    GITHUB, GITEA
+    GITHUB, GITLAB, GITEA, CUSTOM
 }
 
 @Serializable
@@ -15,5 +15,5 @@ data class Account(
     val type: AccountType,
     val token: String,
     val avatarUrl: String? = null,
-    val baseUrl: String? = null // For Gitea
+    val baseUrl: String? = null // For GitLab/Gitea/Custom
 )
