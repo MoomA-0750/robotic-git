@@ -58,6 +58,7 @@ class HomeViewModel(
     init {
         loadRepositories()
         _selectedAccount.value = _accounts.value.firstOrNull()
+        fetchRemoteRepositories()
     }
 
     fun toggleRepoSelection(repoName: String) {
