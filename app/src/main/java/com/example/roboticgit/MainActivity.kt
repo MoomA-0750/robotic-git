@@ -42,6 +42,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             val themeMode by settingsViewModel.themeMode.collectAsState()
             val dynamicColor by settingsViewModel.dynamicColorEnabled.collectAsState()
+            val appFont by settingsViewModel.appFont.collectAsState()
             
             val darkTheme = when (themeMode) {
                 ThemeMode.LIGHT -> false
@@ -51,7 +52,8 @@ class MainActivity : ComponentActivity() {
 
             RoboticGitTheme(
                 darkTheme = darkTheme,
-                dynamicColor = dynamicColor
+                dynamicColor = dynamicColor,
+                appFont = appFont
             ) {
                 val windowSizeClass = calculateWindowSizeClass(this)
                 RoboticGitApp(

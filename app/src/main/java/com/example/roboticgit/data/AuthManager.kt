@@ -5,6 +5,7 @@ import android.os.Environment
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKeys
 import com.example.roboticgit.data.model.Account
+import com.example.roboticgit.data.model.AppFont
 import com.example.roboticgit.data.model.ThemeMode
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -75,6 +76,19 @@ class AuthManager(context: Context) {
 
     fun setDynamicColorEnabled(enabled: Boolean) {
         prefs.edit().putBoolean("dynamic_color_enabled", enabled).apply()
+    }
+
+    fun getAppFont(): AppFont {
+        val font = prefs.getString("app_font", AppFont.GOOGLE_SANS_ROUNDED.name)
+        return try {
+            AppFont.valueOf(font ?: AppFont.GOOGLE_SANS_ROUNDED.name)
+        } catch (e: Exception) {
+            AppFont.GOOGLE_SANS_ROUNDED
+        }
+    }
+
+    fun setAppFont(font: AppFont) {
+        prefs.edit().putString("app_font", font.name).apply()
     }
 
     fun getGitUserName(): String = prefs.getString("git_user_name", "") ?: ""

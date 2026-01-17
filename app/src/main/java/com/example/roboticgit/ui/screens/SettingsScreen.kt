@@ -16,8 +16,13 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.vector.rememberVectorPainter
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
+import com.example.roboticgit.data.model.AppFont
 import com.example.roboticgit.data.model.ThemeMode
 import com.example.roboticgit.ui.viewmodel.SettingsViewModel
 
@@ -29,10 +34,13 @@ fun SettingsScreen(
 ) {
     val defaultCloneDir by viewModel.defaultCloneDir.collectAsState()
     val themeMode by viewModel.themeMode.collectAsState()
+    val dynamicColor by viewModel.dynamicColorEnabled.collectAsState()
+    val appFont by viewModel.appFont.collectAsState()
     val gitUserName by viewModel.gitUserName.collectAsState()
     val gitUserEmail by viewModel.gitUserEmail.collectAsState()
     
     var showThemeDialog by remember { mutableStateOf(false) }
+    var showFontDialog by remember { mutableStateOf(false) }
     var showIdentityDialog by remember { mutableStateOf(false) }
 
     // Directory Picker Launcher
@@ -67,13 +75,23 @@ fun SettingsScreen(
                     headlineContent = { Text(gitUserName.ifBlank { "Git Username" }) },
                     supportingContent = { Text(gitUserEmail.ifBlank { "Set email for Gravatar" }) },
                     leadingContent = {
-                        if (gitUserEmail.isNotBlank()) {
+                        val gravatarUrl = remember(gitUserEmail) {
+                            if (gitUserEmail.isNotBlank()) viewModel.getGravatarUrl(gitUserEmail) else ""
+                        }
+                        
+                        if (gravatarUrl.isNotBlank()) {
                             AsyncImage(
-                                model = viewModel.getGravatarUrl(gitUserEmail),
+                                model = ImageRequest.Builder(LocalContext.current)
+                                    .data(gravatarUrl)
+                                    .crossfade(true)
+                                    .build(),
+                                placeholder = rememberVectorPainter(Icons.Default.AccountCircle),
+                                error = rememberVectorPainter(Icons.Default.AccountCircle),
                                 contentDescription = "Gravatar",
                                 modifier = Modifier
                                     .size(40.dp)
-                                    .clip(CircleShape)
+                                    .clip(CircleShape),
+                                contentScale = ContentScale.Crop
                             )
                         } else {
                             Icon(Icons.Default.AccountCircle, contentDescription = null, modifier = Modifier.size(40.dp))
@@ -100,6 +118,32 @@ fun SettingsScreen(
                     supportingContent = { Text(themeMode.name) },
                     leadingContent = { Icon(themeIcon, contentDescription = null) },
                     modifier = Modifier.clickable { showThemeDialog = true }
+                )
+
+                // Dynamic Color Toggle
+                ListItem(
+                    headlineContent = { Text("Dynamic Color") },
+                    supportingContent = { Text("Use system colors (Android 12+)") },
+                    leadingContent = { Icon(Icons.Default.Palette, contentDescription = null) },
+                    trailingContent = {
+                        Switch(
+                            checked = dynamicColor,
+                            onCheckedChange = { viewModel.onDynamicColorChange(it) }
+                        )
+                    }
+                )
+
+                // Font Selection
+                ListItem(
+                    headlineContent = { Text("App Font") },
+                    supportingContent = { 
+                        Text(when(appFont) {
+                            AppFont.GOOGLE_SANS_ROUNDED -> "Google Sans Rounded"
+                            AppFont.SYSTEM -> "System Font"
+                        })
+                    },
+                    leadingContent = { Icon(Icons.Default.FontDownload, contentDescription = null) },
+                    modifier = Modifier.clickable { showFontDialog = true }
                 )
             }
 
@@ -142,6 +186,17 @@ fun SettingsScreen(
                     showThemeDialog = false
                 },
                 onDismiss = { showThemeDialog = false }
+            )
+        }
+
+        if (showFontDialog) {
+            FontSelectionDialog(
+                currentFont = appFont,
+                onFontSelected = {
+                    viewModel.onAppFontChange(it)
+                    showFontDialog = false
+                },
+                onDismiss = { showFontDialog = false }
             )
         }
 
@@ -240,6 +295,44 @@ fun ThemeSelectionDialog(
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(mode.name)
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
+}
+
+@Composable
+fun FontSelectionDialog(
+    currentFont: AppFont,
+    onFontSelected: (AppFont) -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Choose Font") },
+        text = {
+            Column {
+                AppFont.entries.forEach { font ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onFontSelected(font) }
+                            .padding(vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(
+                            selected = font == currentFont,
+                            onClick = { onFontSelected(font) }
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(when(font) {
+                            AppFont.GOOGLE_SANS_ROUNDED -> "Google Sans Rounded"
+                            AppFont.SYSTEM -> "System Font"
+                        })
                     }
                 }
             }

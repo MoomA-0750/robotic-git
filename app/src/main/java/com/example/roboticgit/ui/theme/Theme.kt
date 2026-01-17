@@ -15,6 +15,7 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
+import com.example.roboticgit.data.model.AppFont
 
 private val DarkColorScheme = darkColorScheme(
     primary = Purple80,
@@ -32,6 +33,7 @@ private val LightColorScheme = lightColorScheme(
 fun RoboticGitTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     dynamicColor: Boolean = true,
+    appFont: AppFont = AppFont.GOOGLE_SANS_ROUNDED,
     content: @Composable () -> Unit
 ) {
     val colorScheme = when {
@@ -58,7 +60,7 @@ fun RoboticGitTheme(
 
     MaterialTheme(
         colorScheme = colorScheme,
-        typography = Typography,
+        typography = getTypography(appFont),
         content = content
     )
 }

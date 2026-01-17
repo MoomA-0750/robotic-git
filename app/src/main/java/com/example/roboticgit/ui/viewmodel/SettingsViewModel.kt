@@ -11,6 +11,7 @@ import com.example.roboticgit.data.GitHubApiService
 import com.example.roboticgit.data.GitHubOAuthConstants
 import com.example.roboticgit.data.model.Account
 import com.example.roboticgit.data.model.AccountType
+import com.example.roboticgit.data.model.AppFont
 import com.example.roboticgit.data.model.ThemeMode
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -42,6 +43,9 @@ class SettingsViewModel(private val authManager: AuthManager) : ViewModel() {
 
     private val _dynamicColorEnabled = MutableStateFlow(authManager.getDynamicColorEnabled())
     val dynamicColorEnabled: StateFlow<Boolean> = _dynamicColorEnabled.asStateFlow()
+
+    private val _appFont = MutableStateFlow(authManager.getAppFont())
+    val appFont: StateFlow<AppFont> = _appFont.asStateFlow()
 
     private val _gitUserName = MutableStateFlow(authManager.getGitUserName())
     val gitUserName: StateFlow<String> = _gitUserName.asStateFlow()
@@ -76,6 +80,11 @@ class SettingsViewModel(private val authManager: AuthManager) : ViewModel() {
         authManager.setDynamicColorEnabled(enabled)
     }
 
+    fun onAppFontChange(newFont: AppFont) {
+        _appFont.value = newFont
+        authManager.setAppFont(newFont)
+    }
+
     fun onGitUserNameChange(newName: String) {
         _gitUserName.value = newName
         authManager.setGitUserName(newName)
@@ -95,10 +104,13 @@ class SettingsViewModel(private val authManager: AuthManager) : ViewModel() {
     }
 
     fun startGitHubLogin(context: Context) {
-        val intent = Intent(
-            Intent.ACTION_VIEW,
-            Uri.parse("${GitHubOAuthConstants.AUTH_URL}?client_id=${GitHubOAuthConstants.CLIENT_ID}&scope=${GitHubOAuthConstants.SCOPES}&redirect_uri=${GitHubOAuthConstants.REDIRECT_URI}")
-        )
+        val loginUrl = Uri.parse(GitHubOAuthConstants.AUTH_URL).buildUpon()
+            .appendQueryParameter("client_id", GitHubOAuthConstants.CLIENT_ID)
+            .appendQueryParameter("scope", GitHubOAuthConstants.SCOPES)
+            .appendQueryParameter("redirect_uri", GitHubOAuthConstants.REDIRECT_URI)
+            .build()
+            
+        val intent = Intent(Intent.ACTION_VIEW, loginUrl)
         context.startActivity(intent)
     }
 

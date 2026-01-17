@@ -1,9 +1,11 @@
 package com.example.roboticgit.data
 
+import com.example.roboticgit.BuildConfig
+
 object GitHubOAuthConstants {
-    const val CLIENT_ID = "YOUR_CLIENT_ID" // 取得したClient IDに置き換えてください
-    const val CLIENT_SECRET = "YOUR_CLIENT_SECRET" // 取得したClient Secretに置き換えてください
+    val CLIENT_ID = BuildConfig.GITHUB_CLIENT_ID
+    val CLIENT_SECRET = BuildConfig.GITHUB_CLIENT_SECRET
     const val REDIRECT_URI = "roboticgit://oauth"
     const val AUTH_URL = "https://github.com/login/oauth/authorize"
-    const val SCOPES = "repo,user"
+    const val SCOPES = "repo,user,admin:repo_hook"
 }
