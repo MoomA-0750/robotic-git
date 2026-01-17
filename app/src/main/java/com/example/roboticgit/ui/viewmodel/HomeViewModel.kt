@@ -19,7 +19,6 @@ import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
-import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
 import retrofit2.converter.kotlinx.serialization.asConverterFactory
 import java.io.File
@@ -50,9 +49,14 @@ class HomeViewModel(
     val selectedRepos: StateFlow<Set<String>> = _selectedRepos.asStateFlow()
 
     private val json = Json { ignoreUnknownKeys = true }
-    
-    private fun getGitManager(): GitManager {
-        return GitManager(File(authManager.getDefaultCloneDir()))
+
+    // Cached instances to avoid recreation on each call
+    private val gitManager: GitManager by lazy {
+        GitManager(File(authManager.getDefaultCloneDir()))
+    }
+
+    private val httpClient: OkHttpClient by lazy {
+        OkHttpClient.Builder().build()
     }
 
     init {
@@ -92,11 +96,11 @@ class HomeViewModel(
         viewModelScope.launch {
             _uiState.value = HomeUiState.Loading
             try {
-                val repoList = getGitManager().listRepositories()
+                val repoList = gitManager.listRepositories()
                 _repos.value = repoList
                 _uiState.value = HomeUiState.Success(repoList)
             } catch (e: Exception) {
-                 _uiState.value = HomeUiState.Error(e.message ?: "Unknown error")
+                _uiState.value = HomeUiState.Error(e.message ?: "Unknown error")
             }
         }
     }
@@ -106,9 +110,7 @@ class HomeViewModel(
     }
 
     fun refreshSelectedRepositories(repoNames: Set<String>) {
-        val account = _selectedAccount.value
-        val token = account?.token
-        val gitManager = getGitManager()
+        val token = _selectedAccount.value?.token
 
         viewModelScope.launch {
             _isRefreshing.value = true
@@ -134,9 +136,7 @@ class HomeViewModel(
 
     fun pullSelectedRepositories() {
         val repoNames = _selectedRepos.value
-        val account = _selectedAccount.value
-        val token = account?.token
-        val gitManager = getGitManager()
+        val token = _selectedAccount.value?.token
 
         viewModelScope.launch {
             _isRefreshing.value = true
@@ -174,60 +174,51 @@ class HomeViewModel(
 
     fun fetchRemoteRepositories() {
         val account = _selectedAccount.value ?: return
-        
+
         viewModelScope.launch {
             try {
-                val logging = HttpLoggingInterceptor().apply {
-                    level = HttpLoggingInterceptor.Level.BODY
-                }
-                val client = OkHttpClient.Builder()
-                    .addInterceptor(logging)
-                    .build()
-
                 val retrofit = Retrofit.Builder()
                     .baseUrl(account.baseUrl ?: "https://api.github.com/")
-                    .client(client)
+                    .client(httpClient)
                     .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
                     .build()
 
                 val service = retrofit.create(GitHubApiService::class.java)
-                val response = service.getUserRepos("Bearer ${account.token}")
-                _remoteRepos.value = response
+                _remoteRepos.value = service.getUserRepos("Bearer ${account.token}")
             } catch (e: Exception) {
-                // Handle error
+                _remoteRepos.value = emptyList()
             }
         }
     }
 
     fun cloneRepository(url: String, name: String) {
-        val account = _selectedAccount.value
-        val token = account?.token
-        
+        val token = _selectedAccount.value?.token
+
         viewModelScope.launch {
-             val placeholder = GitRepo(
-                 name = name,
-                 path = "",
-                 localPath = File(""),
-                 isCloning = true,
-                 statusMessage = "Starting..."
-             )
-             _repos.update { current -> listOf(placeholder) + current }
+            val placeholder = GitRepo(
+                name = name,
+                path = "",
+                localPath = File(""),
+                isCloning = true,
+                statusMessage = "Starting..."
+            )
+            _repos.update { current -> listOf(placeholder) + current }
 
-             val result = getGitManager().cloneRepository(url, name, token) { task, progress ->
-                 _repos.update { current ->
-                     current.map { 
-                         if (it.name == name && it.isCloning) {
-                             it.copy(progress = progress, statusMessage = task)
-                         } else it
-                     }
-                 }
-             }
+            val result = gitManager.cloneRepository(url, name, token) { task, progress ->
+                _repos.update { current ->
+                    current.map {
+                        if (it.name == name && it.isCloning) {
+                            it.copy(progress = progress, statusMessage = task)
+                        } else it
+                    }
+                }
+            }
 
-             if (result.isSuccess) {
-                 loadRepositories()
-             } else {
-                 _repos.update { current -> current.filterNot { it.name == name && it.isCloning } }
-             }
+            if (result.isSuccess) {
+                loadRepositories()
+            } else {
+                _repos.update { current -> current.filterNot { it.name == name && it.isCloning } }
+            }
         }
     }
 }

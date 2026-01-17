@@ -14,6 +14,7 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -32,11 +33,10 @@ import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
-import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.roboticgit.data.AuthManager
@@ -70,9 +70,9 @@ fun HomeScreen(
         factory = HomeViewModelFactory(authManager)
     )
 
+    // Refresh accounts when screen is shown (in case of external changes)
     LaunchedEffect(Unit) {
         viewModel.refreshAccounts()
-        viewModel.loadRepositories()
     }
 
     val repos by viewModel.repos.collectAsState()
@@ -90,8 +90,7 @@ fun HomeScreen(
     var isDialogAnimating by remember { mutableStateOf(false) }
 
     // FAB position tracking for container transform animation
-    var fabBounds by remember { mutableStateOf(androidx.compose.ui.geometry.Rect.Zero) }
-    val density = LocalDensity.current
+    var fabBounds by remember { mutableStateOf(Rect.Zero) }
 
     BackHandler(enabled = isSelectionMode || showCloneImportDialog) {
         if (showCloneImportDialog) {
@@ -188,7 +187,6 @@ fun HomeScreen(
             fabBounds = fabBounds,
             fabColor = MaterialTheme.colorScheme.primaryContainer,
             dialogColor = MaterialTheme.colorScheme.surface,
-            onDismiss = { showCloneImportDialog = false },
             onAnimatingChanged = { isDialogAnimating = it },
             fabContent = {
                 Row(
@@ -374,14 +372,14 @@ fun ImportTabContent(
                     .clip(RoundedCornerShape(16.dp))
                     .background(MaterialTheme.colorScheme.surfaceContainerHigh)
             ) {
-                items(repos) { repo ->
+                itemsIndexed(repos) { index, repo ->
                     ListItem(
                         headlineContent = { Text(repo.fullName) },
                         supportingContent = { Text(if (repo.private) "Private" else "Public") },
                         modifier = Modifier.clickable { onImport(repo) },
                         colors = ListItemDefaults.colors(containerColor = Color.Transparent)
                     )
-                    if (repo != repos.last()) {
+                    if (index < repos.lastIndex) {
                         HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp), thickness = 0.5.dp)
                     }
                 }
@@ -692,10 +690,9 @@ fun EmptyState(modifier: Modifier = Modifier) {
 @Composable
 fun ContainerTransformDialog(
     visible: Boolean,
-    fabBounds: androidx.compose.ui.geometry.Rect,
+    fabBounds: Rect,
     fabColor: Color,
     dialogColor: Color,
-    onDismiss: () -> Unit,
     onAnimatingChanged: (Boolean) -> Unit,
     fabContent: @Composable () -> Unit,
     content: @Composable () -> Unit
@@ -704,7 +701,7 @@ fun ContainerTransformDialog(
 
     // Remember the last valid FAB bounds for closing animation
     var lastValidFabBounds by remember { mutableStateOf(fabBounds) }
-    if (fabBounds != androidx.compose.ui.geometry.Rect.Zero) {
+    if (fabBounds != Rect.Zero) {
         lastValidFabBounds = fabBounds
     }
 
@@ -727,11 +724,11 @@ fun ContainerTransformDialog(
             val screenHeight = constraints.maxHeight.toFloat()
 
             // Use last valid bounds or fallback to bottom-right corner
-            val effectiveBounds = if (lastValidFabBounds != androidx.compose.ui.geometry.Rect.Zero) {
+            val effectiveBounds = if (lastValidFabBounds != Rect.Zero) {
                 lastValidFabBounds
             } else {
                 // Fallback: bottom-right corner, typical FAB position
-                androidx.compose.ui.geometry.Rect(
+                Rect(
                     left = screenWidth - 200f,
                     top = screenHeight - 120f,
                     right = screenWidth - 16f,
@@ -824,8 +821,4 @@ private fun lerp(start: Color, stop: Color, fraction: Float): Color {
         blue = lerp(start.blue, stop.blue, fraction),
         alpha = lerp(start.alpha, stop.alpha, fraction)
     )
-}
-
-private fun lerp(start: Dp, stop: Dp, fraction: Float): Dp {
-    return Dp(lerp(start.value, stop.value, fraction))
 }
