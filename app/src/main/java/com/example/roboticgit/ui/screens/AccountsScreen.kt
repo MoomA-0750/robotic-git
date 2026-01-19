@@ -6,6 +6,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import com.example.roboticgit.ui.components.AppAlertDialog
+import com.example.roboticgit.ui.theme.ShapeTokens
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
@@ -161,45 +163,11 @@ fun AccountsScreen(
 }
 
 @Composable
-fun ModernAlertDialog(
-    onDismissRequest: () -> Unit,
-    title: String,
-    confirmButton: @Composable (() -> Unit)? = null,
-    dismissButton: @Composable (() -> Unit)? = null,
-    content: @Composable ColumnScope.() -> Unit
-) {
-    AlertDialog(
-        onDismissRequest = onDismissRequest,
-        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = true),
-        modifier = Modifier.clip(RoundedCornerShape(28.dp)),
-        title = { 
-            Text(
-                text = title, 
-                style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.Normal
-            ) 
-        },
-        text = {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 8.dp),
-                content = content
-            )
-        },
-        confirmButton = confirmButton ?: {},
-        dismissButton = dismissButton,
-        shape = RoundedCornerShape(28.dp),
-        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
-    )
-}
-
-@Composable
 fun ServiceSelectionDialog(
     onServiceSelected: (AccountType) -> Unit,
     onDismiss: () -> Unit
 ) {
-    ModernAlertDialog(
+    AppAlertDialog(
         onDismissRequest = onDismiss,
         title = "Choose Service",
         dismissButton = {
@@ -207,11 +175,9 @@ fun ServiceSelectionDialog(
         }
     ) {
         Surface(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(16.dp)),
+            modifier = Modifier.fillMaxWidth(),
             color = MaterialTheme.colorScheme.surface,
-            shape = RoundedCornerShape(16.dp),
+            shape = ShapeTokens.Card,
             tonalElevation = 2.dp
         ) {
             Column {
@@ -247,7 +213,7 @@ fun AddGitHubAccountDialog(
     var token by remember { mutableStateOf("") }
     var mode by remember { mutableStateOf("select") }
 
-    ModernAlertDialog(
+    AppAlertDialog(
         onDismissRequest = onDismiss,
         title = "Add GitHub Account",
         dismissButton = {
@@ -259,7 +225,7 @@ fun AddGitHubAccountDialog(
                 Button(
                     onClick = onGitHubLogin, 
                     modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp)
+                    shape = ShapeTokens.TextField
                 ) {
                     Text("Login with Browser")
                 }
@@ -282,13 +248,13 @@ fun AddGitHubAccountDialog(
                     onValueChange = { token = it },
                     label = { Text("GitHub Token") },
                     modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp)
+                    shape = ShapeTokens.TextField
                 )
                 Button(
                     onClick = { onManualAdd(token) }, 
                     enabled = token.isNotBlank() && validationStatus !is ValidationStatus.Loading,
                     modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp)
+                    shape = ShapeTokens.TextField
                 ) {
                     Text("Verify & Add")
                 }
@@ -315,7 +281,7 @@ fun AddGitLabAccountDialog(
     var url by remember { mutableStateOf("https://gitlab.com") }
     var token by remember { mutableStateOf("") }
 
-    ModernAlertDialog(
+    AppAlertDialog(
         onDismissRequest = onDismiss,
         title = "Add GitLab Account",
         confirmButton = {
@@ -335,7 +301,7 @@ fun AddGitLabAccountDialog(
             onValueChange = { url = it },
             label = { Text("GitLab URL") },
             modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(12.dp)
+            shape = ShapeTokens.TextField
         )
         Spacer(modifier = Modifier.height(8.dp))
         OutlinedTextField(
@@ -343,7 +309,7 @@ fun AddGitLabAccountDialog(
             onValueChange = { token = it },
             label = { Text("Personal Access Token") },
             modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(12.dp)
+            shape = ShapeTokens.TextField
         )
         if (validationStatus is ValidationStatus.Loading) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 16.dp))
         if (validationStatus is ValidationStatus.Error) Text(validationStatus.message, color = MaterialTheme.colorScheme.error)
@@ -359,7 +325,7 @@ fun AddGiteaAccountDialog(
     var url by remember { mutableStateOf("") }
     var token by remember { mutableStateOf("") }
 
-    ModernAlertDialog(
+    AppAlertDialog(
         onDismissRequest = onDismiss,
         title = "Add Gitea Account",
         confirmButton = {
@@ -379,7 +345,7 @@ fun AddGiteaAccountDialog(
             onValueChange = { url = it },
             label = { Text("Instance URL (e.g. https://gitea.com)") },
             modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(12.dp)
+            shape = ShapeTokens.TextField
         )
         Spacer(modifier = Modifier.height(8.dp))
         OutlinedTextField(
@@ -387,7 +353,7 @@ fun AddGiteaAccountDialog(
             onValueChange = { token = it },
             label = { Text("Access Token") },
             modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(12.dp)
+            shape = ShapeTokens.TextField
         )
         if (validationStatus is ValidationStatus.Loading) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 16.dp))
         if (validationStatus is ValidationStatus.Error) Text(validationStatus.message, color = MaterialTheme.colorScheme.error)
@@ -403,7 +369,7 @@ fun AddCustomAccountDialog(
     var url by remember { mutableStateOf("") }
     var token by remember { mutableStateOf("") }
 
-    ModernAlertDialog(
+    AppAlertDialog(
         onDismissRequest = onDismiss,
         title = "Add Custom Git Account",
         confirmButton = {
@@ -423,7 +389,7 @@ fun AddCustomAccountDialog(
             onValueChange = { url = it },
             label = { Text("Git Server URL") },
             modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(12.dp)
+            shape = ShapeTokens.TextField
         )
         Spacer(modifier = Modifier.height(8.dp))
         OutlinedTextField(
@@ -431,7 +397,7 @@ fun AddCustomAccountDialog(
             onValueChange = { token = it },
             label = { Text("Access Token") },
             modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(12.dp)
+            shape = ShapeTokens.TextField
         )
         if (validationStatus is ValidationStatus.Loading) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 16.dp))
         if (validationStatus is ValidationStatus.Error) Text(validationStatus.message, color = MaterialTheme.colorScheme.error)

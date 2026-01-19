@@ -1,5 +1,6 @@
 package com.example.roboticgit.ui.screens
 
+import androidx.compose.animation.*
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -7,6 +8,8 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
@@ -44,6 +47,7 @@ import com.example.roboticgit.data.RepoFile
 import com.example.roboticgit.data.model.BranchInfo
 import com.example.roboticgit.data.model.FileState
 import com.example.roboticgit.data.model.FileStatus
+import com.example.roboticgit.ui.theme.extendedColors
 import com.example.roboticgit.ui.viewmodel.RepoDetailUiState
 import com.example.roboticgit.ui.viewmodel.RepoDetailViewModel
 import com.example.roboticgit.ui.viewmodel.RepoDetailViewModelFactory
@@ -56,7 +60,8 @@ import java.util.Date
 @Composable
 fun RepoDetailScreen(
     repoName: String,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    showBackButton: Boolean = true
 ) {
     val context = LocalContext.current
     val authManager = remember { AuthManager(context) }
@@ -69,7 +74,7 @@ fun RepoDetailScreen(
     val errorMessage by viewModel.errorMessage.collectAsState()
     
     var commitMessage by remember { mutableStateOf("") }
-    var selectedTab by remember { mutableIntStateOf(0) }
+    val pagerState = rememberPagerState(pageCount = { 4 })
     
     var diffFile by remember { mutableStateOf<String?>(null) }
     var diffText by remember { mutableStateOf<String?>(null) }
@@ -85,38 +90,63 @@ fun RepoDetailScreen(
     
     val scope = rememberCoroutineScope()
 
+    // Track staged files for contextual top bar
+    val stagedCount = (uiState as? RepoDetailUiState.Success)?.fileStatuses?.count { it.isStaged } ?: 0
+    val totalChanges = (uiState as? RepoDetailUiState.Success)?.fileStatuses?.size ?: 0
+    val showStagedTopBar = pagerState.currentPage == 0 && stagedCount > 0
+
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = { 
-                    Column {
-                        Text(repoName)
-                        if (uiState is RepoDetailUiState.Success) {
-                            val state = uiState as RepoDetailUiState.Success
-                            Text(
-                                text = state.currentBranch ?: "No branch",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.primary
-                            )
+            if (showStagedTopBar) {
+                // Contextual top bar for staged files
+                StagedFilesTopBar(
+                    stagedCount = stagedCount,
+                    totalCount = totalChanges,
+                    onClearStaged = {
+                        (uiState as? RepoDetailUiState.Success)?.fileStatuses
+                            ?.filter { it.isStaged }
+                            ?.forEach { viewModel.toggleStage(it) }
+                    },
+                    onStageAll = {
+                        (uiState as? RepoDetailUiState.Success)?.fileStatuses
+                            ?.filter { !it.isStaged }
+                            ?.forEach { viewModel.toggleStage(it) }
+                    }
+                )
+            } else {
+                TopAppBar(
+                    title = {
+                        Column {
+                            Text(repoName)
+                            if (uiState is RepoDetailUiState.Success) {
+                                val state = uiState as RepoDetailUiState.Success
+                                Text(
+                                    text = state.currentBranch ?: "No branch",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
                         }
+                    },
+                    navigationIcon = {
+                        if (showBackButton) {
+                            IconButton(onClick = onBack) {
+                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                            }
+                        }
+                    },
+                    actions = {
+                        IconButton(onClick = { viewModel.loadData() }) {
+                            Icon(Icons.Default.Refresh, contentDescription = "Refresh")
+                        }
+                        TextButton(onClick = { viewModel.pull() }) { Text("Pull") }
+                        TextButton(onClick = { viewModel.push() }) { Text("Push") }
                     }
-                },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                    }
-                },
-                actions = {
-                    IconButton(onClick = { viewModel.loadData() }) {
-                        Icon(Icons.Default.Refresh, contentDescription = "Refresh")
-                    }
-                    TextButton(onClick = { viewModel.pull() }) { Text("Pull") }
-                    TextButton(onClick = { viewModel.push() }) { Text("Push") }
-                }
-            )
+                )
+            }
         },
         floatingActionButton = {
-            if (selectedTab == 3) {
+            if (pagerState.currentPage == 3) {
                 FloatingActionButton(onClick = { showCreateBranchDialog = true }) {
                     Icon(Icons.Default.Add, contentDescription = "Create Branch")
                 }
@@ -124,19 +154,27 @@ fun RepoDetailScreen(
         }
     ) { paddingValues ->
         Column(modifier = Modifier.padding(paddingValues).fillMaxSize()) {
-            TabRow(selectedTabIndex = selectedTab) {
-                Tab(selected = selectedTab == 0, onClick = { selectedTab = 0 }) {
-                    Text("Changes", modifier = Modifier.padding(16.dp))
-                }
-                Tab(selected = selectedTab == 1, onClick = { selectedTab = 1 }) {
-                    Text("Files", modifier = Modifier.padding(16.dp))
-                }
-                Tab(selected = selectedTab == 2, onClick = { selectedTab = 2 }) {
-                    Text("History", modifier = Modifier.padding(16.dp))
-                }
-                Tab(selected = selectedTab == 3, onClick = { selectedTab = 3 }) {
-                    Text("Branches", modifier = Modifier.padding(16.dp))
-                }
+            PrimaryTabRow(selectedTabIndex = pagerState.currentPage) {
+                Tab(
+                    selected = pagerState.currentPage == 0,
+                    onClick = { scope.launch { pagerState.animateScrollToPage(0) } },
+                    text = { Text("Changes") }
+                )
+                Tab(
+                    selected = pagerState.currentPage == 1,
+                    onClick = { scope.launch { pagerState.animateScrollToPage(1) } },
+                    text = { Text("Files") }
+                )
+                Tab(
+                    selected = pagerState.currentPage == 2,
+                    onClick = { scope.launch { pagerState.animateScrollToPage(2) } },
+                    text = { Text("History") }
+                )
+                Tab(
+                    selected = pagerState.currentPage == 3,
+                    onClick = { scope.launch { pagerState.animateScrollToPage(3) } },
+                    text = { Text("Branches") }
+                )
             }
 
             Box(modifier = Modifier.weight(1f)) {
@@ -145,60 +183,68 @@ fun RepoDetailScreen(
                          CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
                     }
                     is RepoDetailUiState.Success -> {
-                        when (selectedTab) {
-                            0 -> ChangesView(
-                                fileStatuses = state.fileStatuses,
-                                commitMessage = commitMessage,
-                                onMessageChange = { commitMessage = it },
-                                onCommit = { 
-                                    viewModel.commit(commitMessage)
-                                    commitMessage = ""
-                                },
-                                onToggleStage = viewModel::toggleStage,
-                                onRollback = viewModel::rollbackFile,
-                                onFileClick = { file ->
-                                    diffFile = file.path
-                                    scope.launch {
-                                        diffText = viewModel.getFileDiff(file)
+                        // HorizontalPager provides natural Lateral Transition for tabs
+                        HorizontalPager(
+                            state = pagerState,
+                            modifier = Modifier.fillMaxSize(),
+                            userScrollEnabled = true,
+                            beyondViewportPageCount = 1
+                        ) { page ->
+                            when (page) {
+                                0 -> ChangesView(
+                                    fileStatuses = state.fileStatuses,
+                                    commitMessage = commitMessage,
+                                    onMessageChange = { commitMessage = it },
+                                    onCommit = {
+                                        viewModel.commit(commitMessage)
+                                        commitMessage = ""
+                                    },
+                                    onToggleStage = viewModel::toggleStage,
+                                    onRollback = viewModel::rollbackFile,
+                                    onFileClick = { file ->
+                                        diffFile = file.path
+                                        scope.launch {
+                                            diffText = viewModel.getFileDiff(file)
+                                        }
+                                    },
+                                    onEditClick = { file ->
+                                        scope.launch {
+                                            editingText = viewModel.readFile(file.path)
+                                            editingPath = file.path
+                                        }
                                     }
-                                },
-                                onEditClick = { file ->
-                                    scope.launch {
-                                        editingText = viewModel.readFile(file.path)
-                                        editingPath = file.path
+                                )
+                                1 -> FilesView(
+                                    viewModel = viewModel,
+                                    onFileClick = { path ->
+                                        scope.launch {
+                                            editingText = viewModel.readFile(path)
+                                            editingPath = path
+                                        }
                                     }
-                                }
-                            )
-                            1 -> FilesView(
-                                viewModel = viewModel,
-                                onFileClick = { path ->
-                                    scope.launch {
-                                        editingText = viewModel.readFile(path)
-                                        editingPath = path
+                                )
+                                2 -> HistoryView(
+                                    commits = state.commits,
+                                    getGravatarUrl = viewModel::getGravatarUrl,
+                                    onCommitClick = { commit ->
+                                        selectedCommit = commit
+                                        scope.launch {
+                                            commitChanges = viewModel.getCommitChanges(commit)
+                                        }
                                     }
-                                }
-                            )
-                            2 -> HistoryView(
-                                commits = state.commits,
-                                getGravatarUrl = viewModel::getGravatarUrl,
-                                onCommitClick = { commit ->
-                                    selectedCommit = commit
-                                    scope.launch {
-                                        commitChanges = viewModel.getCommitChanges(commit)
+                                )
+                                3 -> BranchesView(
+                                    branches = state.branches,
+                                    onBranchClick = { branch ->
+                                        if (!branch.isCurrent) {
+                                            viewModel.checkoutBranch(branch.name)
+                                        }
+                                    },
+                                    onDeleteBranch = { branch ->
+                                        branchToDelete = branch
                                     }
-                                }
-                            )
-                            3 -> BranchesView(
-                                branches = state.branches,
-                                onBranchClick = { branch ->
-                                    if (!branch.isCurrent) {
-                                        viewModel.checkoutBranch(branch.name)
-                                    }
-                                },
-                                onDeleteBranch = { branch ->
-                                    branchToDelete = branch
-                                }
-                            )
+                                )
+                            }
                         }
                     }
                     is RepoDetailUiState.Error -> {
@@ -216,13 +262,11 @@ fun RepoDetailScreen(
                     text = { Text("You have uncommitted changes. Please commit or stash them before switching branches, or force checkout (Warning: this will lose changes).") },
                     confirmButton = {
                         TextButton(onClick = { 
-                            // In Task 3 we don't have force UI yet, but we could add it here
                             viewModel.clearError()
                         }) { Text("OK") }
                     },
                     dismissButton = {
                         TextButton(onClick = { 
-                            // Example: force checkout logic could go here
                             viewModel.clearError()
                         }) { Text("Force (Stub)") }
                     }
@@ -304,36 +348,39 @@ fun RepoDetailScreen(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun BranchesView(
     branches: List<BranchInfo>,
     onBranchClick: (BranchInfo) -> Unit,
     onDeleteBranch: (BranchInfo) -> Unit
 ) {
-    var selectedBranchTab by remember { mutableIntStateOf(0) }
-    val filteredBranches = remember(branches, selectedBranchTab) {
-        if (selectedBranchTab == 0) {
-            branches.filter { !it.isRemote }
-        } else {
-            branches.filter { it.isRemote }
-        }
-    }
+    var selectedIndex by remember { mutableIntStateOf(0) }
+    val localBranches = remember(branches) { branches.filter { !it.isRemote } }
+    val remoteBranches = remember(branches) { branches.filter { it.isRemote } }
+    val options = listOf("Local", "Remote")
 
     Column(modifier = Modifier.fillMaxSize()) {
-        SecondaryTabRow(selectedTabIndex = selectedBranchTab) {
-            Tab(selected = selectedBranchTab == 0, onClick = { selectedBranchTab = 0 }) {
-                Text("Local", modifier = Modifier.padding(8.dp))
-            }
-            Tab(selected = selectedBranchTab == 1, onClick = { selectedBranchTab = 1 }) {
-                Text("Remote", modifier = Modifier.padding(8.dp))
+        SingleChoiceSegmentedButtonRow(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 12.dp)
+        ) {
+            options.forEachIndexed { index, label ->
+                SegmentedButton(
+                    shape = SegmentedButtonDefaults.itemShape(index = index, count = options.size),
+                    onClick = { selectedIndex = index },
+                    selected = selectedIndex == index
+                ) {
+                    Text(label)
+                }
             }
         }
 
+        val filteredBranches = if (selectedIndex == 0) localBranches else remoteBranches
         LazyColumn(modifier = Modifier.weight(1f)) {
             items(filteredBranches) { branch ->
                 ListItem(
-                    headlineContent = { 
+                    headlineContent = {
                         Text(
                             text = branch.name,
                             fontWeight = if (branch.isCurrent) FontWeight.Bold else FontWeight.Normal,
@@ -497,6 +544,34 @@ fun FilesView(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun StagedFilesTopBar(
+    stagedCount: Int,
+    totalCount: Int,
+    onClearStaged: () -> Unit,
+    onStageAll: () -> Unit
+) {
+    TopAppBar(
+        title = { Text("$stagedCount staged") },
+        navigationIcon = {
+            IconButton(onClick = onClearStaged) {
+                Icon(Icons.Default.Close, contentDescription = "Clear staged")
+            }
+        },
+        actions = {
+            if (stagedCount < totalCount) {
+                TextButton(onClick = onStageAll) {
+                    Text("Stage All")
+                }
+            }
+        },
+        colors = TopAppBarDefaults.topAppBarColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
+        )
+    )
+}
+
 @Composable
 fun ChangesView(
     fileStatuses: List<FileStatus>,
@@ -508,13 +583,18 @@ fun ChangesView(
     onFileClick: (FileStatus) -> Unit,
     onEditClick: (FileStatus) -> Unit
 ) {
-    Column(modifier = Modifier.fillMaxSize()) {
+    val stagedCount = fileStatuses.count { it.isStaged }
+
+    Box(modifier = Modifier.fillMaxSize()) {
         if (fileStatuses.isEmpty()) {
-            Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text("No changes detected")
             }
         } else {
-            LazyColumn(modifier = Modifier.weight(1f)) {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(bottom = 96.dp) // Space for floating toolbar
+            ) {
                 items(fileStatuses) { fileStatus ->
                     FileStatusItem(
                         fileStatus = fileStatus,
@@ -526,28 +606,63 @@ fun ChangesView(
                     HorizontalDivider()
                 }
             }
-        }
 
-        Card(
-            modifier = Modifier.fillMaxWidth().padding(16.dp),
-            elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
-        ) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                OutlinedTextField(
-                    value = commitMessage,
-                    onValueChange = onMessageChange,
-                    label = { Text("Commit Message") },
-                    modifier = Modifier.fillMaxWidth()
+            // Floating Toolbar with input field and FAB
+            if (fileStatuses.isNotEmpty()) {
+                FloatingCommitToolbar(
+                    commitMessage = commitMessage,
+                    onMessageChange = onMessageChange,
+                    onCommit = onCommit,
+                    enabled = commitMessage.isNotBlank() && stagedCount > 0,
+                    modifier = Modifier.align(Alignment.BottomCenter)
                 )
-                Spacer(modifier = Modifier.height(8.dp))
-                Button(
-                    onClick = onCommit,
-                    enabled = commitMessage.isNotBlank() && fileStatuses.any { it.isStaged },
-                    modifier = Modifier.align(Alignment.End)
-                ) {
-                    Text("Commit Staged")
-                }
             }
+        }
+    }
+}
+
+@Composable
+fun FloatingCommitToolbar(
+    commitMessage: String,
+    onMessageChange: (String) -> Unit,
+    onCommit: () -> Unit,
+    enabled: Boolean,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier
+            .padding(16.dp)
+            .fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        // Commit message input field
+        TextField(
+            value = commitMessage,
+            onValueChange = onMessageChange,
+            placeholder = { Text("Commit message") },
+            modifier = Modifier.weight(1f),
+            singleLine = true,
+            shape = MaterialTheme.shapes.extraLarge,
+            colors = TextFieldDefaults.colors(
+                unfocusedIndicatorColor = Color.Transparent,
+                focusedIndicatorColor = Color.Transparent
+            )
+        )
+
+        // Commit FAB
+        FloatingActionButton(
+            onClick = onCommit,
+            containerColor = if (enabled)
+                MaterialTheme.colorScheme.primaryContainer
+            else
+                MaterialTheme.colorScheme.surfaceContainerHigh,
+            contentColor = if (enabled)
+                MaterialTheme.colorScheme.onPrimaryContainer
+            else
+                MaterialTheme.colorScheme.onSurfaceVariant
+        ) {
+            Icon(Icons.Default.Check, contentDescription = "Commit")
         }
     }
 }
@@ -560,10 +675,11 @@ fun FileStatusItem(
     onClick: () -> Unit,
     onEditClick: () -> Unit
 ) {
+    val extendedColors = MaterialTheme.extendedColors
     val color = when (fileStatus.state) {
-        FileState.ADDED, FileState.UNTRACKED -> Color(0xFF4CAF50)
-        FileState.MODIFIED -> Color(0xFF2196F3)
-        FileState.REMOVED, FileState.DELETED, FileState.MISSING -> Color(0xFFF44336)
+        FileState.ADDED, FileState.UNTRACKED -> extendedColors.statusAdded
+        FileState.MODIFIED -> extendedColors.statusModified
+        FileState.REMOVED, FileState.DELETED, FileState.MISSING -> extendedColors.statusDeleted
         else -> MaterialTheme.colorScheme.onSurface
     }
 
@@ -600,6 +716,8 @@ fun DiffDialog(
     diffText: String?,
     onDismiss: () -> Unit
 ) {
+    val extendedColors = MaterialTheme.extendedColors
+
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Diff: $fileName") },
@@ -620,13 +738,13 @@ fun DiffDialog(
                     ) {
                         diffText.split("\n").forEach { line ->
                             val bgColor = when {
-                                line.startsWith("+") -> Color(0xFFE6FFEC)
-                                line.startsWith("-") -> Color(0xFFFFEBEE)
+                                line.startsWith("+") -> extendedColors.diffAddedBackground
+                                line.startsWith("-") -> extendedColors.diffRemovedBackground
                                 else -> Color.Transparent
                             }
                             val textColor = when {
-                                line.startsWith("+") -> Color(0xFF2E7D32)
-                                line.startsWith("-") -> Color(0xFFC62828)
+                                line.startsWith("+") -> extendedColors.diffAddedText
+                                line.startsWith("-") -> extendedColors.diffRemovedText
                                 else -> MaterialTheme.colorScheme.onSurfaceVariant
                             }
                             Text(

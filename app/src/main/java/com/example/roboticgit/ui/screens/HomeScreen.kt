@@ -1,14 +1,14 @@
 package com.example.roboticgit.ui.screens
 
-import android.graphics.Path
 import android.text.format.DateUtils
-import android.view.animation.PathInterpolator
 import androidx.activity.compose.BackHandler
-import androidx.compose.animation.*
-import androidx.compose.animation.core.Easing
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.tween
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
@@ -17,6 +17,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import com.example.roboticgit.ui.theme.ShapeTokens
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
@@ -27,40 +28,36 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.roboticgit.data.AuthManager
 import com.example.roboticgit.data.model.Account
 import com.example.roboticgit.data.model.GitRepo
 import com.example.roboticgit.data.model.RemoteRepo
+import com.example.roboticgit.ui.components.AppAlertDialog
+import com.example.roboticgit.ui.theme.ContainerTransformSpec
 import com.example.roboticgit.ui.viewmodel.HomeUiState
+import kotlinx.coroutines.launch
 import com.example.roboticgit.ui.viewmodel.HomeViewModel
 import com.example.roboticgit.ui.viewmodel.HomeViewModelFactory
-
-// Pre-created easing to avoid jank on first animation
-// Path: M 0,0 C 0.05, 0, 0.133333, 0.06, 0.166666, 0.4 C 0.208333, 0.82, 0.25, 1, 1, 1
-private val EmphasizedEasing: Easing = Path().let { path ->
-    path.moveTo(0f, 0f)
-    path.cubicTo(0.05f, 0f, 0.133333f, 0.06f, 0.166666f, 0.4f)
-    path.cubicTo(0.208333f, 0.82f, 0.25f, 1f, 1f, 1f)
-    val interpolator = PathInterpolator(path)
-    Easing { fraction -> interpolator.getInterpolation(fraction) }
-}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
     modifier: Modifier = Modifier,
+    selectedRepoName: String? = null,
     onRepoClick: (String) -> Unit
 ) {
     val context = LocalContext.current
@@ -70,9 +67,9 @@ fun HomeScreen(
         factory = HomeViewModelFactory(authManager)
     )
 
-    // Refresh accounts when screen is shown (in case of external changes)
     LaunchedEffect(Unit) {
         viewModel.refreshAccounts()
+        viewModel.loadRepositories()
     }
 
     val repos by viewModel.repos.collectAsState()
@@ -89,7 +86,6 @@ fun HomeScreen(
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var isDialogAnimating by remember { mutableStateOf(false) }
 
-    // FAB position tracking for container transform animation
     var fabBounds by remember { mutableStateOf(Rect.Zero) }
 
     BackHandler(enabled = isSelectionMode || showCloneImportDialog) {
@@ -121,9 +117,7 @@ fun HomeScreen(
                         onClick = { showCloneImportDialog = true },
                         icon = { Icon(Icons.Default.Add, contentDescription = null) },
                         text = { Text("Add Repository") },
-                        containerColor = MaterialTheme.colorScheme.primaryContainer,
-                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                        shape = RoundedCornerShape(16.dp),
+                        shape = ShapeTokens.FAB,
                         modifier = Modifier.onGloballyPositioned { coordinates ->
                             fabBounds = coordinates.boundsInRoot()
                         }
@@ -155,6 +149,7 @@ fun HomeScreen(
                                     repos = repos,
                                     selectedRepos = selectedRepos,
                                     isSelectionMode = isSelectionMode,
+                                    currentlyViewedRepo = selectedRepoName,
                                     onRepoClick = { repoName ->
                                         if (isSelectionMode) {
                                             viewModel.toggleRepoSelection(repoName)
@@ -180,7 +175,7 @@ fun HomeScreen(
             }
         }
 
-        // Container Transform Animation
+        // Container Transform Animation Overlay
         val fabContentColor = MaterialTheme.colorScheme.onPrimaryContainer
         ContainerTransformDialog(
             visible = showCloneImportDialog,
@@ -193,16 +188,8 @@ fun HomeScreen(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(
-                        Icons.Default.Add,
-                        contentDescription = null,
-                        tint = fabContentColor
-                    )
-                    Text(
-                        "Add Repository",
-                        color = fabContentColor,
-                        style = MaterialTheme.typography.labelLarge
-                    )
+                    Icon(Icons.Default.Add, null, tint = fabContentColor)
+                    Text("Add Repository", color = fabContentColor, style = MaterialTheme.typography.labelLarge)
                 }
             }
         ) {
@@ -225,7 +212,7 @@ fun HomeScreen(
     }
 
     if (showDeleteConfirm) {
-        ModernHomeAlertDialog(
+        AppAlertDialog(
             onDismissRequest = { showDeleteConfirm = false },
             title = "Delete Repositories",
             confirmButton = {
@@ -261,7 +248,8 @@ fun CloneImportFullScreenDialog(
     onClone: (String, String) -> Unit,
     onImport: (RemoteRepo) -> Unit
 ) {
-    var tabIndex by remember { mutableIntStateOf(0) }
+    val pagerState = rememberPagerState(pageCount = { 2 })
+    val scope = rememberCoroutineScope()
     var manualUrl by remember { mutableStateOf("") }
     var manualName by remember { mutableStateOf("") }
 
@@ -283,23 +271,32 @@ fun CloneImportFullScreenDialog(
         }
     ) { padding ->
         Column(modifier = Modifier.padding(padding)) {
-            PrimaryTabRow(selectedTabIndex = tabIndex) {
-                Tab(selected = tabIndex == 0, onClick = { tabIndex = 0 }, text = { Text("Import") })
-                Tab(selected = tabIndex == 1, onClick = { tabIndex = 1 }, text = { Text("Clone") })
+            PrimaryTabRow(selectedTabIndex = pagerState.currentPage) {
+                Tab(
+                    selected = pagerState.currentPage == 0,
+                    onClick = { scope.launch { pagerState.animateScrollToPage(0) } },
+                    text = { Text("Import") }
+                )
+                Tab(
+                    selected = pagerState.currentPage == 1,
+                    onClick = { scope.launch { pagerState.animateScrollToPage(1) } },
+                    text = { Text("Clone") }
+                )
             }
 
-            when (tabIndex) {
-                0 -> {
-                    ImportTabContent(
+            HorizontalPager(
+                state = pagerState,
+                modifier = Modifier.fillMaxSize()
+            ) { page ->
+                when (page) {
+                    0 -> ImportTabContent(
                         accounts = accounts,
                         selectedAccount = selectedAccount,
                         repos = remoteRepos,
                         onAccountSelect = onAccountSelect,
                         onImport = onImport
                     )
-                }
-                1 -> {
-                    CloneTabContent(
+                    1 -> CloneTabContent(
                         url = manualUrl,
                         name = manualName,
                         onUrlChange = { manualUrl = it },
@@ -321,7 +318,6 @@ fun ImportTabContent(
     onImport: (RemoteRepo) -> Unit
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
-        // Account Selector
         if (accounts.isNotEmpty()) {
             Text(
                 "Account",
@@ -334,7 +330,7 @@ fun ImportTabContent(
                     .fillMaxWidth()
                     .heightIn(max = 120.dp)
                     .padding(horizontal = 16.dp)
-                    .clip(RoundedCornerShape(16.dp))
+                    .clip(ShapeTokens.Card)
                     .background(MaterialTheme.colorScheme.surfaceContainerHigh)
             ) {
                 items(accounts) { account ->
@@ -369,7 +365,7 @@ fun ImportTabContent(
                 modifier = Modifier
                     .weight(1f)
                     .padding(horizontal = 16.dp)
-                    .clip(RoundedCornerShape(16.dp))
+                    .clip(ShapeTokens.Card)
                     .background(MaterialTheme.colorScheme.surfaceContainerHigh)
             ) {
                 itemsIndexed(repos) { index, repo ->
@@ -408,58 +404,24 @@ fun CloneTabContent(
             onValueChange = onUrlChange,
             label = { Text("Repository URL") },
             modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(12.dp)
+            shape = ShapeTokens.TextField
         )
         OutlinedTextField(
             value = name,
             onValueChange = onNameChange,
             label = { Text("Local Name") },
             modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(12.dp)
+            shape = ShapeTokens.TextField
         )
         Button(
             onClick = onClone,
             modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(12.dp),
+            shape = ShapeTokens.Button,
             enabled = url.isNotBlank() && name.isNotBlank()
         ) {
             Text("Start Clone")
         }
     }
-}
-
-@Composable
-fun ModernHomeAlertDialog(
-    onDismissRequest: () -> Unit,
-    title: String,
-    confirmButton: @Composable (() -> Unit)? = null,
-    dismissButton: @Composable (() -> Unit)? = null,
-    content: @Composable ColumnScope.() -> Unit
-) {
-    AlertDialog(
-        onDismissRequest = onDismissRequest,
-        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = true),
-        modifier = Modifier.clip(RoundedCornerShape(28.dp)),
-        title = { 
-            Text(
-                text = title, 
-                style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.Normal
-            ) 
-        },
-        text = {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 8.dp),
-                content = content
-            )
-        },
-        confirmButton = confirmButton ?: {},
-        dismissButton = dismissButton,
-        shape = RoundedCornerShape(28.dp),
-        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
-    )
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -506,6 +468,7 @@ fun RepoList(
     repos: List<GitRepo>,
     selectedRepos: Set<String>,
     isSelectionMode: Boolean,
+    currentlyViewedRepo: String? = null,
     onRepoClick: (String) -> Unit,
     onRepoLongClick: (String) -> Unit
 ) {
@@ -529,6 +492,7 @@ fun RepoList(
             RepoItem(
                 repo = repo,
                 isSelected = selectedRepos.contains(repo.name),
+                isCurrentlyViewed = currentlyViewedRepo == repo.name && !isSelectionMode,
                 onClick = { onRepoClick(repo.name) },
                 onLongClick = { onRepoLongClick(repo.name) }
             )
@@ -541,6 +505,7 @@ fun RepoList(
 fun RepoItem(
     repo: GitRepo,
     isSelected: Boolean,
+    isCurrentlyViewed: Boolean = false,
     onClick: () -> Unit,
     onLongClick: () -> Unit
 ) {
@@ -555,16 +520,28 @@ fun RepoItem(
     }
 
     val backgroundColor by animateColorAsState(
-        targetValue = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
+        targetValue = when {
+            isSelected -> MaterialTheme.colorScheme.primaryContainer
+            isCurrentlyViewed -> MaterialTheme.colorScheme.secondaryContainer
+            else -> MaterialTheme.colorScheme.surfaceContainerHigh
+        },
         label = "repoItemBackgroundColor"
     )
 
+    val borderColor = MaterialTheme.colorScheme.primary
+
     Surface(
-        shape = RoundedCornerShape(24.dp),
+        shape = ShapeTokens.ListItem,
         color = backgroundColor,
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(24.dp))
+            .then(
+                if (isCurrentlyViewed && !isSelected) {
+                    Modifier.border(2.dp, borderColor, ShapeTokens.ListItem)
+                } else {
+                    Modifier
+                }
+            )
             .combinedClickable(
                 onClick = onClick,
                 onLongClick = onLongClick,
@@ -583,16 +560,22 @@ fun RepoItem(
                         .size(40.dp)
                         .clip(CircleShape)
                         .background(
-                            if (isSelected) MaterialTheme.colorScheme.primary 
-                            else MaterialTheme.colorScheme.primaryContainer
+                            when {
+                                isSelected -> MaterialTheme.colorScheme.primary
+                                isCurrentlyViewed -> MaterialTheme.colorScheme.secondary
+                                else -> MaterialTheme.colorScheme.primaryContainer
+                            }
                         ),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
                         imageVector = if (isSelected) Icons.Default.Check else Icons.Outlined.Folder,
                         contentDescription = null,
-                        tint = if (isSelected) MaterialTheme.colorScheme.onPrimary 
-                               else MaterialTheme.colorScheme.onPrimaryContainer
+                        tint = when {
+                            isSelected -> MaterialTheme.colorScheme.onPrimary
+                            isCurrentlyViewed -> MaterialTheme.colorScheme.onSecondary
+                            else -> MaterialTheme.colorScheme.onPrimaryContainer
+                        }
                     )
                 }
                 Spacer(modifier = Modifier.width(12.dp))
@@ -609,23 +592,32 @@ fun RepoItem(
                             modifier = Modifier.weight(1f, fill = false),
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
-                            color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer 
-                                    else MaterialTheme.colorScheme.onSurface
+                            color = when {
+                                isSelected -> MaterialTheme.colorScheme.onPrimaryContainer
+                                isCurrentlyViewed -> MaterialTheme.colorScheme.onSecondaryContainer
+                                else -> MaterialTheme.colorScheme.onSurface
+                            }
                         )
                         if (relativeTime.isNotEmpty() && !repo.isCloning) {
                             Text(
                                 text = relativeTime,
                                 style = MaterialTheme.typography.labelSmall,
-                                color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
-                                        else MaterialTheme.colorScheme.onSurfaceVariant
+                                color = when {
+                                    isSelected -> MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
+                                    isCurrentlyViewed -> MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.7f)
+                                    else -> MaterialTheme.colorScheme.onSurfaceVariant
+                                }
                             )
                         }
                     }
                     Text(
                         text = if (repo.isCloning) "Cloning now..." else if (repo.lastCommitTime > 0) "Last committed" else "No commits yet",
                         style = MaterialTheme.typography.labelSmall,
-                        color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
-                                else MaterialTheme.colorScheme.onSurfaceVariant
+                        color = when {
+                            isSelected -> MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
+                            isCurrentlyViewed -> MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.7f)
+                            else -> MaterialTheme.colorScheme.onSurfaceVariant
+                        }
                     )
                 }
             }
@@ -651,8 +643,11 @@ fun RepoItem(
                 Text(
                     text = repo.path,
                     style = MaterialTheme.typography.bodyMedium,
-                    color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
-                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = when {
+                        isSelected -> MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
+                        isCurrentlyViewed -> MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.8f)
+                        else -> MaterialTheme.colorScheme.onSurfaceVariant
+                    },
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -699,35 +694,29 @@ fun ContainerTransformDialog(
 ) {
     val density = LocalDensity.current
 
-    // Remember the last valid FAB bounds for closing animation
     var lastValidFabBounds by remember { mutableStateOf(fabBounds) }
     if (fabBounds != Rect.Zero) {
         lastValidFabBounds = fabBounds
     }
 
-    // Animation progress (0f = FAB, 1f = Full screen)
     val animationProgress by animateFloatAsState(
         targetValue = if (visible) 1f else 0f,
-        animationSpec = tween(durationMillis = 500, easing = EmphasizedEasing),
+        animationSpec = ContainerTransformSpec,
         label = "containerTransformProgress"
     )
 
-    // Notify parent about animation state
     LaunchedEffect(animationProgress) {
         onAnimatingChanged(animationProgress > 0f)
     }
 
-    // Only show when animating or visible
     if (animationProgress > 0f) {
         BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
             val screenWidth = constraints.maxWidth.toFloat()
             val screenHeight = constraints.maxHeight.toFloat()
 
-            // Use last valid bounds or fallback to bottom-right corner
             val effectiveBounds = if (lastValidFabBounds != Rect.Zero) {
                 lastValidFabBounds
             } else {
-                // Fallback: bottom-right corner, typical FAB position
                 Rect(
                     left = screenWidth - 200f,
                     top = screenHeight - 120f,
@@ -736,40 +725,31 @@ fun ContainerTransformDialog(
                 )
             }
 
-            // Calculate interpolated values
             val fabCenterX = effectiveBounds.center.x
             val fabCenterY = effectiveBounds.center.y
             val fabWidth = effectiveBounds.width.coerceAtLeast(56f)
             val fabHeight = effectiveBounds.height.coerceAtLeast(56f)
 
-            // Interpolate size
             val currentWidth = lerp(fabWidth, screenWidth, animationProgress)
             val currentHeight = lerp(fabHeight, screenHeight, animationProgress)
 
-            // Interpolate position (from FAB center to screen center)
             val screenCenterX = screenWidth / 2
             val screenCenterY = screenHeight / 2
             val currentCenterX = lerp(fabCenterX, screenCenterX, animationProgress)
             val currentCenterY = lerp(fabCenterY, screenCenterY, animationProgress)
 
-            // Calculate offset from top-left
             val offsetX = currentCenterX - currentWidth / 2
             val offsetY = currentCenterY - currentHeight / 2
 
-            // Interpolate corner radius (16dp for FAB, 0 for full screen)
             val cornerRadius = lerp(16f, 0f, animationProgress)
-
-            // Interpolate color
             val currentColor = lerp(fabColor, dialogColor, animationProgress)
 
-            // Dialog content alpha (fade in after expansion, fade out early when closing)
             val dialogContentAlpha = if (visible) {
                 ((animationProgress - 0.2f) / 0.5f).coerceIn(0f, 1f)
             } else {
                 ((animationProgress - 0.3f) / 0.4f).coerceIn(0f, 1f)
             }
 
-            // FAB content alpha (show when closing and nearly complete)
             val fabContentAlpha = if (visible) {
                 0f
             } else {
@@ -786,7 +766,6 @@ fun ContainerTransformDialog(
                 shadowElevation = lerp(6f, 0f, animationProgress).dp
             ) {
                 Box(modifier = Modifier.fillMaxSize()) {
-                    // Dialog content
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
@@ -794,7 +773,6 @@ fun ContainerTransformDialog(
                     ) {
                         content()
                     }
-                    // FAB content (shown when closing)
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
@@ -809,7 +787,6 @@ fun ContainerTransformDialog(
     }
 }
 
-// Linear interpolation helper
 private fun lerp(start: Float, stop: Float, fraction: Float): Float {
     return start + (stop - start) * fraction
 }
