@@ -38,10 +38,12 @@ fun SettingsScreen(
     val appFont by viewModel.appFont.collectAsState()
     val gitUserName by viewModel.gitUserName.collectAsState()
     val gitUserEmail by viewModel.gitUserEmail.collectAsState()
-    
+    val editorFontSize by viewModel.editorFontSize.collectAsState()
+
     var showThemeDialog by remember { mutableStateOf(false) }
     var showFontDialog by remember { mutableStateOf(false) }
     var showIdentityDialog by remember { mutableStateOf(false) }
+    var showEditorFontSizeDialog by remember { mutableStateOf(false) }
 
     // Directory Picker Launcher
     val directoryPickerLauncher = rememberLauncherForActivityResult(
@@ -136,7 +138,7 @@ fun SettingsScreen(
                 // Font Selection
                 ListItem(
                     headlineContent = { Text("App Font") },
-                    supportingContent = { 
+                    supportingContent = {
                         Text(when(appFont) {
                             AppFont.GOOGLE_SANS_ROUNDED -> "Google Sans Rounded"
                             AppFont.SYSTEM -> "System Font"
@@ -144,6 +146,19 @@ fun SettingsScreen(
                     },
                     leadingContent = { Icon(Icons.Default.FontDownload, contentDescription = null) },
                     modifier = Modifier.clickable { showFontDialog = true }
+                )
+            }
+
+            item { HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp)) }
+
+            item {
+                SectionHeader("Editor")
+
+                ListItem(
+                    headlineContent = { Text("Editor Font Size") },
+                    supportingContent = { Text("${editorFontSize}sp") },
+                    leadingContent = { Icon(Icons.Default.FormatSize, contentDescription = null) },
+                    modifier = Modifier.clickable { showEditorFontSizeDialog = true }
                 )
             }
 
@@ -210,6 +225,17 @@ fun SettingsScreen(
                     showIdentityDialog = false
                 },
                 onDismiss = { showIdentityDialog = false }
+            )
+        }
+
+        if (showEditorFontSizeDialog) {
+            EditorFontSizeDialog(
+                currentSize = editorFontSize,
+                onSizeSelected = {
+                    viewModel.onEditorFontSizeChange(it)
+                    showEditorFontSizeDialog = false
+                },
+                onDismiss = { showEditorFontSizeDialog = false }
             )
         }
     }
@@ -333,6 +359,43 @@ fun FontSelectionDialog(
                             AppFont.GOOGLE_SANS_ROUNDED -> "Google Sans Rounded"
                             AppFont.SYSTEM -> "System Font"
                         })
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
+}
+
+@Composable
+fun EditorFontSizeDialog(
+    currentSize: Int,
+    onSizeSelected: (Int) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val sizes = listOf(10, 12, 14, 16, 18, 20, 22, 24)
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Editor Font Size") },
+        text = {
+            Column {
+                sizes.forEach { size ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onSizeSelected(size) }
+                            .padding(vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(
+                            selected = size == currentSize,
+                            onClick = { onSizeSelected(size) }
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("${size}sp")
                     }
                 }
             }

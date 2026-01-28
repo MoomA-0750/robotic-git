@@ -28,10 +28,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import com.example.roboticgit.R
 import androidx.compose.ui.text.input.OffsetMapping
 import androidx.compose.ui.text.input.TransformedText
 import androidx.compose.ui.text.input.VisualTransformation
@@ -47,6 +50,7 @@ import com.example.roboticgit.data.RepoFile
 import com.example.roboticgit.data.model.BranchInfo
 import com.example.roboticgit.data.model.FileState
 import com.example.roboticgit.data.model.FileStatus
+import com.example.roboticgit.ui.theme.JetBrainsMono
 import com.example.roboticgit.ui.theme.extendedColors
 import com.example.roboticgit.ui.viewmodel.RepoDetailUiState
 import com.example.roboticgit.ui.viewmodel.RepoDetailViewModel
@@ -66,13 +70,14 @@ fun RepoDetailScreen(
     val context = LocalContext.current
     val authManager = remember { AuthManager(context) }
     val rootDir = remember { File(authManager.getDefaultCloneDir()) }
+    val editorFontSize = remember { authManager.getEditorFontSize() }
 
     val viewModel: RepoDetailViewModel = viewModel(
         factory = RepoDetailViewModelFactory(authManager, rootDir, repoName)
     )
     val uiState by viewModel.uiState.collectAsState()
     val errorMessage by viewModel.errorMessage.collectAsState()
-    
+
     var commitMessage by remember { mutableStateOf("") }
     val pagerState = rememberPagerState(pageCount = { 4 })
     
@@ -324,7 +329,8 @@ fun RepoDetailScreen(
                     viewModel.saveFile(editingPath!!, editingText)
                     editingPath = null
                 },
-                onDismiss = { editingPath = null }
+                onDismiss = { editingPath = null },
+                fontSize = editorFontSize
             )
         }
 
@@ -777,7 +783,8 @@ fun EditorDialog(
     content: String,
     onContentChange: (String) -> Unit,
     onSave: () -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    fontSize: Int = 14
 ) {
     Dialog(
         onDismissRequest = onDismiss,
@@ -801,11 +808,12 @@ fun EditorDialog(
                         }
                     }
                 )
-                
+
                 CodeEditor(
                     value = content,
                     onValueChange = onContentChange,
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier.weight(1f),
+                    fontSize = fontSize
                 )
             }
         }
@@ -816,11 +824,15 @@ fun EditorDialog(
 fun CodeEditor(
     value: String,
     onValueChange: (String) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    fontSize: Int = 14
 ) {
     val scrollState = rememberScrollState()
     var textLayoutResult by remember { mutableStateOf<TextLayoutResult?>(null) }
-    
+
+    val fontSizeSp = fontSize.sp
+    val lineHeightSp = (fontSize * 1.5f).sp
+
     val lineNumbers = remember(value) {
         val count = value.count { it == '\n' } + 1
         (1..count).joinToString("\n")
@@ -829,11 +841,13 @@ fun CodeEditor(
     val gutterBackground = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
     val gutterTextColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
     val guideColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f)
+    val whitespaceColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.2f)
+    val whitespaceTransformation = remember(whitespaceColor) { WhitespaceVisualTransformation(whitespaceColor) }
 
     Row(modifier = modifier
         .fillMaxSize()
         .background(MaterialTheme.colorScheme.surface)) {
-        
+
         Box(
             modifier = Modifier
                 .fillMaxHeight()
@@ -846,9 +860,9 @@ fun CodeEditor(
             Text(
                 text = lineNumbers,
                 style = TextStyle(
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 12.sp,
-                    lineHeight = 20.sp,
+                    fontFamily = JetBrainsMono,
+                    fontSize = fontSizeSp,
+                    lineHeight = lineHeightSp,
                     color = gutterTextColor
                 ),
                 modifier = Modifier.padding(end = 8.dp)
@@ -864,39 +878,38 @@ fun CodeEditor(
         ) {
             Canvas(modifier = Modifier.matchParentSize()) {
                 val layout = textLayoutResult ?: return@Canvas
-                
-                val charWidth = if (layout.lineCount > 0 && layout.getLineEnd(0) > 0) {
-                    layout.getHorizontalPosition(1, false)
-                } else {
-                    7.2.sp.toPx() 
-                }
+                if (layout.lineCount == 0) return@Canvas
+
+                val charWidth = fontSizeSp.toPx() * 0.6f
                 val tabWidth = charWidth * 4
 
                 for (lineIndex in 0 until layout.lineCount) {
                     val lineStart = layout.getLineStart(lineIndex)
                     val lineEnd = layout.getLineEnd(lineIndex)
-                    val lineText = value.substring(lineStart, lineEnd)
-                    
+                    if (lineStart >= value.length) continue
+                    val lineText = value.substring(lineStart, minOf(lineEnd, value.length))
+
                     var leadingSpaces = 0
                     for (char in lineText) {
-                        if (char == ' ') leadingSpaces++
-                        else if (char == '\t') {
-                            leadingSpaces += 4 - (leadingSpaces % 4)
-                        } else break
+                        when (char) {
+                            ' ' -> leadingSpaces++
+                            '\t' -> leadingSpaces += 4
+                            else -> break
+                        }
                     }
-                    
+
                     val indentLevels = leadingSpaces / 4
                     if (indentLevels > 0) {
                         val top = layout.getLineTop(lineIndex)
                         val bottom = layout.getLineBottom(lineIndex)
-                        
+
                         for (level in 1..indentLevels) {
-                            val x = level * tabWidth
+                            val x = (level * 4 - 2) * charWidth
                             drawLine(
                                 color = guideColor,
                                 start = Offset(x, top),
                                 end = Offset(x, bottom),
-                                strokeWidth = 1.dp.toPx()
+                                strokeWidth = 1f
                             )
                         }
                     }
@@ -908,29 +921,43 @@ fun CodeEditor(
                 onValueChange = onValueChange,
                 modifier = Modifier.fillMaxWidth(),
                 textStyle = TextStyle(
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 12.sp,
-                    lineHeight = 20.sp,
+                    fontFamily = JetBrainsMono,
+                    fontSize = fontSizeSp,
+                    lineHeight = lineHeightSp,
                     color = MaterialTheme.colorScheme.onSurface
                 ),
                 cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
                 onTextLayout = { textLayoutResult = it },
-                visualTransformation = WhitespaceVisualTransformation()
+                visualTransformation = whitespaceTransformation
             )
         }
     }
 }
 
-class WhitespaceVisualTransformation : VisualTransformation {
+class WhitespaceVisualTransformation(
+    private val whitespaceColor: Color
+) : VisualTransformation {
     override fun filter(text: AnnotatedString): TransformedText {
-        val out = text.text
-            .replace(' ', '·')
-            .replace("\t", "»   ")
-        
+        val builder = AnnotatedString.Builder()
+
+        for (char in text.text) {
+            when (char) {
+                ' ' -> builder.append(AnnotatedString(
+                    "·",
+                    SpanStyle(color = whitespaceColor)
+                ))
+                '\t' -> builder.append(AnnotatedString(
+                    "→   ",
+                    SpanStyle(color = whitespaceColor)
+                ))
+                else -> builder.append(char.toString())
+            }
+        }
+
         val offsetMapping = object : OffsetMapping {
             override fun originalToTransformed(offset: Int): Int {
                 var transformedOffset = 0
-                for (i in 0 until offset) {
+                for (i in 0 until offset.coerceAtMost(text.text.length)) {
                     if (text.text[i] == '\t') transformedOffset += 4 else transformedOffset++
                 }
                 return transformedOffset
@@ -947,11 +974,11 @@ class WhitespaceVisualTransformation : VisualTransformation {
                     }
                     originalOffset++
                 }
-                return originalOffset
+                return originalOffset.coerceAtMost(text.text.length)
             }
         }
 
-        return TransformedText(AnnotatedString(out), offsetMapping)
+        return TransformedText(builder.toAnnotatedString(), offsetMapping)
     }
 }
 

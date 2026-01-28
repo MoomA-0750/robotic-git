@@ -53,6 +53,9 @@ class SettingsViewModel(private val authManager: AuthManager) : ViewModel() {
     private val _gitUserEmail = MutableStateFlow(authManager.getGitUserEmail())
     val gitUserEmail: StateFlow<String> = _gitUserEmail.asStateFlow()
 
+    private val _editorFontSize = MutableStateFlow(authManager.getEditorFontSize())
+    val editorFontSize: StateFlow<Int> = _editorFontSize.asStateFlow()
+
     private val _validationStatus = MutableStateFlow<ValidationStatus>(ValidationStatus.Idle)
     val validationStatus: StateFlow<ValidationStatus> = _validationStatus.asStateFlow()
 
@@ -93,6 +96,11 @@ class SettingsViewModel(private val authManager: AuthManager) : ViewModel() {
     fun onGitUserEmailChange(newEmail: String) {
         _gitUserEmail.value = newEmail
         authManager.setGitUserEmail(newEmail)
+    }
+
+    fun onEditorFontSizeChange(newSize: Int) {
+        _editorFontSize.value = newSize
+        authManager.setEditorFontSize(newSize)
     }
 
     fun getGravatarUrl(email: String): String {

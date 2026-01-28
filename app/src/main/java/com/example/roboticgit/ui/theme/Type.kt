@@ -26,6 +26,10 @@ private fun createGoogleSansRounded(weight: FontWeight): FontFamily {
     )
 }
 
+val JetBrainsMono = FontFamily(
+    Font(R.font.jetbrains_mono_regular, FontWeight.Normal)
+)
+
 @OptIn(ExperimentalTextApi::class)
 fun getTypography(appFont: AppFont): Typography {
     val isVariableFontSupported = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O

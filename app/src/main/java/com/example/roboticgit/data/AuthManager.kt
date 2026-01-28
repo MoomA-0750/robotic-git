@@ -97,6 +97,9 @@ class AuthManager(context: Context) {
     fun getGitUserEmail(): String = prefs.getString("git_user_email", "") ?: ""
     fun setGitUserEmail(email: String) = prefs.edit().putString("git_user_email", email).apply()
 
+    fun getEditorFontSize(): Int = prefs.getInt("editor_font_size", 14)
+    fun setEditorFontSize(size: Int) = prefs.edit().putInt("editor_font_size", size).apply()
+
     fun clear() {
         prefs.edit().clear().apply()
     }
