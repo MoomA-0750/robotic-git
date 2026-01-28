@@ -81,15 +81,15 @@ AIアシスタントが順次実装していくための詳細なタスクリス
 - `data/model/MergeResult.kt` - 新規作成
 
 **実装内容:**
-- [ ] `GitManager.kt` に以下のメソッドを追加:
+- [x] `GitManager.kt` に以下のメソッドを追加:
   - `mergeBranch(repoPath: String, branchName: String): MergeResult`
-- [ ] `data/model/MergeResult.kt` を新規作成
-- [ ] マージダイアログUI実装:
+- [x] `data/model/MergeResult.kt` を新規作成
+- [x] マージダイアログUI実装:
   - マージ元ブランチ選択
   - Fast-forward オプション
   - コミットメッセージ編集
-- [ ] マージ成功時の通知
-- [ ] コンフリクト発生時の画面遷移（Task 9 に繋がる）
+- [x] マージ成功時の通知
+- [x] コンフリクト発生時の画面遷移（Task 9 に繋がる）
 
 ---
 
@@ -103,13 +103,13 @@ AIアシスタントが順次実装していくための詳細なタスクリス
 - `data/model/RemoteInfo.kt` - 新規作成
 
 **実装内容:**
-- [ ] `data/model/RemoteInfo.kt` を新規作成
-- [ ] `GitManager.kt` に以下のメソッドを追加:
+- [x] `data/model/RemoteInfo.kt` を新規作成
+- [x] `GitManager.kt` に以下のメソッドを追加:
   - `listRemotes(repoPath: String): List<RemoteInfo>`
   - `addRemote(repoPath: String, name: String, url: String): Result<Unit>`
   - `removeRemote(repoPath: String, name: String): Result<Unit>`
   - `setRemoteUrl(repoPath: String, name: String, url: String): Result<Unit>`
-- [ ] リモート管理画面のUI実装
+- [x] リモート管理画面のUI実装（BranchesタブのRemotesダイアログ）
 
 ---
 
@@ -122,27 +122,25 @@ AIアシスタントが順次実装していくための詳細なタスクリス
 - `RepoDetailViewModel.kt` - 状態管理追加
 
 **実装内容:**
-- [ ] `data/model/ConflictFile.kt` を新規作成
-- [ ] `GitManager.kt` に以下のメソッドを追加:
+- [x] `data/model/ConflictFile.kt` を新規作成
+- [x] `GitManager.kt` に以下のメソッドを追加:
   - `getConflictingFiles(repoPath: String): List<String>`
   - `getConflictContent(repoPath: String, filePath: String): ConflictFile`
-- [ ] `FileStatus.kt` に `CONFLICTING` 状態を追加
-- [ ] Changes タブでコンフリクトファイルを特別表示
+- [x] `FileStatus.kt` に `CONFLICTING` 状態を追加
+- [x] Changes タブでコンフリクトファイルを特別表示（警告アイコン、赤背景、Resolveボタン）
 
 ---
 
 ### Task 8: コンフリクト解決UI
 **ファイル:**
-- 新規作成: `ui/screens/ConflictResolveScreen.kt`
-- 新規作成: `ui/viewmodel/ConflictResolveViewModel.kt`
-- `RoboticGitNavigation.kt` - ルート追加
+- `RepoDetailScreen.kt` - ConflictResolveDialog追加
 
 **実装内容:**
-- [ ] 3-way マージビューの実装
-- [ ] コンフリクトマーカーのハイライト表示
-- [ ] ワンタップで選択肢を選べるUI
-- [ ] `GitManager.kt` に解決用メソッドを追加
-- [ ] 解決完了後の自動ステージング
+- [x] 3-way マージビューの実装（Ours/Theirs/Manual選択）
+- [x] コンフリクトマーカーのハイライト表示
+- [x] ワンタップで選択肢を選べるUI（RadioButton）
+- [x] `GitManager.kt` に解決用メソッドを追加（resolveConflict）
+- [x] 解決完了後の自動ステージング
 
 ---
 
@@ -152,11 +150,12 @@ AIアシスタントが順次実装していくための詳細なタスクリス
 - `RepoDetailScreen.kt` - UI追加
 
 **実装内容:**
-- [ ] `GitManager.kt` に以下のメソッドを追加:
+- [x] `GitManager.kt` に以下のメソッドを追加:
   - `abortMerge(repoPath: String): Result<Unit>`
   - `isMerging(repoPath: String): Boolean`
-- [ ] マージ中の場合、画面上部にバナー表示
-- [ ] Complete Merge → 自動でコミット作成
+  - `completeMerge(repoPath: String): Result<Unit>`
+- [x] マージ中の場合、画面上部にバナー表示（MergeBanner）
+- [x] Complete Merge → 自動でコミット作成
 
 ---
 

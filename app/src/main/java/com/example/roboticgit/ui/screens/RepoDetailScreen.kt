@@ -48,8 +48,12 @@ import com.example.roboticgit.data.AuthManager
 import com.example.roboticgit.data.CommitChange
 import com.example.roboticgit.data.RepoFile
 import com.example.roboticgit.data.model.BranchInfo
+import com.example.roboticgit.data.model.ConflictFile
 import com.example.roboticgit.data.model.FileState
 import com.example.roboticgit.data.model.FileStatus
+import com.example.roboticgit.data.model.MergeResult
+import com.example.roboticgit.data.model.MergeStatus
+import com.example.roboticgit.data.model.RemoteInfo
 import com.example.roboticgit.ui.theme.JetBrainsMono
 import com.example.roboticgit.ui.theme.extendedColors
 import com.example.roboticgit.ui.viewmodel.RepoDetailUiState
@@ -92,7 +96,16 @@ fun RepoDetailScreen(
 
     var showCreateBranchDialog by remember { mutableStateOf(false) }
     var branchToDelete by remember { mutableStateOf<BranchInfo?>(null) }
-    
+    var showMergeDialog by remember { mutableStateOf(false) }
+    var showRemotesDialog by remember { mutableStateOf(false) }
+    var conflictFileToResolve by remember { mutableStateOf<String?>(null) }
+    var conflictContent by remember { mutableStateOf<ConflictFile?>(null) }
+
+    val isMerging by viewModel.isMerging.collectAsState()
+    val mergeResult by viewModel.mergeResult.collectAsState()
+    val remotes by viewModel.remotes.collectAsState()
+    val conflictingFiles by viewModel.conflictingFiles.collectAsState()
+
     val scope = rememberCoroutineScope()
 
     // Track staged files for contextual top bar
@@ -159,6 +172,15 @@ fun RepoDetailScreen(
         }
     ) { paddingValues ->
         Column(modifier = Modifier.padding(paddingValues).fillMaxSize()) {
+            // Merge in progress banner
+            if (isMerging) {
+                MergeBanner(
+                    conflictCount = conflictingFiles.size,
+                    onAbort = { viewModel.abortMerge() },
+                    onComplete = { viewModel.completeMerge() }
+                )
+            }
+
             PrimaryTabRow(selectedTabIndex = pagerState.currentPage) {
                 Tab(
                     selected = pagerState.currentPage == 0,
@@ -217,6 +239,12 @@ fun RepoDetailScreen(
                                             editingText = viewModel.readFile(file.path)
                                             editingPath = file.path
                                         }
+                                    },
+                                    onResolveConflict = { file ->
+                                        scope.launch {
+                                            conflictFileToResolve = file.path
+                                            conflictContent = viewModel.getConflictContent(file.path)
+                                        }
                                     }
                                 )
                                 1 -> FilesView(
@@ -247,7 +275,9 @@ fun RepoDetailScreen(
                                     },
                                     onDeleteBranch = { branch ->
                                         branchToDelete = branch
-                                    }
+                                    },
+                                    onMergeClick = { showMergeDialog = true },
+                                    onRemotesClick = { showRemotesDialog = true }
                                 )
                             }
                         }
@@ -351,6 +381,65 @@ fun RepoDetailScreen(
                 }
             )
         }
+
+        // Merge dialog
+        if (showMergeDialog && uiState is RepoDetailUiState.Success) {
+            val state = uiState as RepoDetailUiState.Success
+            MergeDialog(
+                branches = state.branches.filter { !it.isCurrent && !it.isRemote },
+                currentBranch = state.currentBranch ?: "",
+                onMerge = { branchName, fastForward ->
+                    viewModel.mergeBranch(branchName, fastForward)
+                    showMergeDialog = false
+                },
+                onDismiss = { showMergeDialog = false }
+            )
+        }
+
+        // Merge result snackbar
+        mergeResult?.let { result ->
+            LaunchedEffect(result) {
+                // Auto-dismiss after showing
+            }
+            when (result.status) {
+                MergeStatus.SUCCESS, MergeStatus.FAST_FORWARD -> {
+                    LaunchedEffect(result) {
+                        viewModel.clearMergeResult()
+                    }
+                }
+                MergeStatus.CONFLICTING -> {
+                    // Conflicts are handled by the banner
+                }
+                else -> {}
+            }
+        }
+
+        // Remotes dialog
+        if (showRemotesDialog) {
+            RemotesDialog(
+                remotes = remotes,
+                onAddRemote = { name, url -> viewModel.addRemote(name, url) },
+                onRemoveRemote = { name -> viewModel.removeRemote(name) },
+                onUpdateRemote = { name, url -> viewModel.updateRemoteUrl(name, url) },
+                onDismiss = { showRemotesDialog = false }
+            )
+        }
+
+        // Conflict resolution dialog
+        if (conflictFileToResolve != null && conflictContent != null) {
+            ConflictResolveDialog(
+                conflictFile = conflictContent!!,
+                onResolve = { resolvedContent ->
+                    viewModel.resolveConflict(conflictFileToResolve!!, resolvedContent)
+                    conflictFileToResolve = null
+                    conflictContent = null
+                },
+                onDismiss = {
+                    conflictFileToResolve = null
+                    conflictContent = null
+                }
+            )
+        }
     }
 }
 
@@ -358,7 +447,9 @@ fun RepoDetailScreen(
 fun BranchesView(
     branches: List<BranchInfo>,
     onBranchClick: (BranchInfo) -> Unit,
-    onDeleteBranch: (BranchInfo) -> Unit
+    onDeleteBranch: (BranchInfo) -> Unit,
+    onMergeClick: () -> Unit = {},
+    onRemotesClick: () -> Unit = {}
 ) {
     var selectedIndex by remember { mutableIntStateOf(0) }
     val localBranches = remember(branches) { branches.filter { !it.isRemote } }
@@ -366,10 +457,35 @@ fun BranchesView(
     val options = listOf("Local", "Remote")
 
     Column(modifier = Modifier.fillMaxSize()) {
+        // Action buttons row
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            OutlinedButton(
+                onClick = onMergeClick,
+                modifier = Modifier.weight(1f)
+            ) {
+                Icon(Icons.Default.MergeType, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("Merge")
+            }
+            OutlinedButton(
+                onClick = onRemotesClick,
+                modifier = Modifier.weight(1f)
+            ) {
+                Icon(Icons.Default.Cloud, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("Remotes")
+            }
+        }
+
         SingleChoiceSegmentedButtonRow(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 12.dp)
+                .padding(horizontal = 16.dp, vertical = 4.dp)
         ) {
             options.forEachIndexed { index, label ->
                 SegmentedButton(
@@ -587,7 +703,8 @@ fun ChangesView(
     onToggleStage: (FileStatus) -> Unit,
     onRollback: (FileStatus) -> Unit,
     onFileClick: (FileStatus) -> Unit,
-    onEditClick: (FileStatus) -> Unit
+    onEditClick: (FileStatus) -> Unit,
+    onResolveConflict: (FileStatus) -> Unit = {}
 ) {
     val stagedCount = fileStatuses.count { it.isStaged }
 
@@ -607,7 +724,8 @@ fun ChangesView(
                         onToggleStage = { onToggleStage(fileStatus) },
                         onRollback = { onRollback(fileStatus) },
                         onClick = { onFileClick(fileStatus) },
-                        onEditClick = { onEditClick(fileStatus) }
+                        onEditClick = { onEditClick(fileStatus) },
+                        onResolveConflict = { onResolveConflict(fileStatus) }
                     )
                     HorizontalDivider()
                 }
@@ -679,40 +797,85 @@ fun FileStatusItem(
     onToggleStage: () -> Unit,
     onRollback: () -> Unit,
     onClick: () -> Unit,
-    onEditClick: () -> Unit
+    onEditClick: () -> Unit,
+    onResolveConflict: () -> Unit = {}
 ) {
     val extendedColors = MaterialTheme.extendedColors
+    val isConflict = fileStatus.state == FileState.CONFLICTING
+
     val color = when (fileStatus.state) {
         FileState.ADDED, FileState.UNTRACKED -> extendedColors.statusAdded
         FileState.MODIFIED -> extendedColors.statusModified
         FileState.REMOVED, FileState.DELETED, FileState.MISSING -> extendedColors.statusDeleted
+        FileState.CONFLICTING -> MaterialTheme.colorScheme.error
         else -> MaterialTheme.colorScheme.onSurface
     }
 
     ListItem(
-        headlineContent = { Text(fileStatus.path) },
-        supportingContent = { 
-            Text(fileStatus.state.name, color = color, style = MaterialTheme.typography.bodySmall) 
+        headlineContent = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(fileStatus.path)
+                if (isConflict) {
+                    Spacer(Modifier.width(8.dp))
+                    Icon(
+                        Icons.Default.Warning,
+                        contentDescription = "Conflict",
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+            }
+        },
+        supportingContent = {
+            Text(
+                if (isConflict) "CONFLICT - needs resolution" else fileStatus.state.name,
+                color = color,
+                style = MaterialTheme.typography.bodySmall
+            )
         },
         leadingContent = {
-            Checkbox(
-                checked = fileStatus.isStaged,
-                onCheckedChange = { onToggleStage() }
-            )
+            if (isConflict) {
+                Icon(
+                    Icons.Default.ErrorOutline,
+                    contentDescription = "Conflict",
+                    tint = MaterialTheme.colorScheme.error
+                )
+            } else {
+                Checkbox(
+                    checked = fileStatus.isStaged,
+                    onCheckedChange = { onToggleStage() }
+                )
+            }
         },
         trailingContent = {
             Row {
-                IconButton(onClick = onEditClick) {
-                    Icon(Icons.Default.Edit, contentDescription = "Edit")
-                }
-                if (!fileStatus.isStaged && fileStatus.state != FileState.UNTRACKED) {
-                    IconButton(onClick = onRollback) {
-                        Icon(Icons.AutoMirrored.Filled.Undo, contentDescription = "Rollback", tint = MaterialTheme.colorScheme.error)
+                if (isConflict) {
+                    FilledTonalButton(
+                        onClick = onResolveConflict,
+                        colors = ButtonDefaults.filledTonalButtonColors(
+                            containerColor = MaterialTheme.colorScheme.errorContainer
+                        )
+                    ) {
+                        Text("Resolve", color = MaterialTheme.colorScheme.onErrorContainer)
+                    }
+                } else {
+                    IconButton(onClick = onEditClick) {
+                        Icon(Icons.Default.Edit, contentDescription = "Edit")
+                    }
+                    if (!fileStatus.isStaged && fileStatus.state != FileState.UNTRACKED) {
+                        IconButton(onClick = onRollback) {
+                            Icon(Icons.AutoMirrored.Filled.Undo, contentDescription = "Rollback", tint = MaterialTheme.colorScheme.error)
+                        }
                     }
                 }
             }
         },
-        modifier = Modifier.clickable { onClick() }
+        modifier = Modifier
+            .clickable { if (!isConflict) onClick() }
+            .then(
+                if (isConflict) Modifier.background(MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.1f))
+                else Modifier
+            )
     )
 }
 
@@ -1066,4 +1229,502 @@ fun CommitDetailDialog(
             TextButton(onClick = onDismiss) { Text("Close") }
         }
     )
+}
+
+// ========== Merge UI Components ==========
+
+@Composable
+fun MergeBanner(
+    conflictCount: Int,
+    onAbort: () -> Unit,
+    onComplete: () -> Unit
+) {
+    Surface(
+        color = if (conflictCount > 0) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.primaryContainer,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = if (conflictCount > 0) Icons.Default.Warning else Icons.Default.MergeType,
+                contentDescription = null,
+                tint = if (conflictCount > 0) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onPrimaryContainer
+            )
+            Spacer(Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Merge in Progress",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = if (conflictCount > 0) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onPrimaryContainer
+                )
+                if (conflictCount > 0) {
+                    Text(
+                        text = "$conflictCount conflict(s) need resolution",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onErrorContainer
+                    )
+                }
+            }
+            TextButton(onClick = onAbort) {
+                Text("Abort", color = MaterialTheme.colorScheme.error)
+            }
+            if (conflictCount == 0) {
+                Spacer(Modifier.width(8.dp))
+                Button(onClick = onComplete) {
+                    Text("Complete")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun MergeDialog(
+    branches: List<BranchInfo>,
+    currentBranch: String,
+    onMerge: (String, Boolean) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var selectedBranch by remember { mutableStateOf<BranchInfo?>(null) }
+    var fastForwardOnly by remember { mutableStateOf(false) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Merge into $currentBranch") },
+        text = {
+            Column {
+                Text("Select branch to merge:", style = MaterialTheme.typography.bodyMedium)
+                Spacer(Modifier.height(8.dp))
+
+                if (branches.isEmpty()) {
+                    Text(
+                        "No other branches available to merge",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.outline
+                    )
+                } else {
+                    LazyColumn(modifier = Modifier.heightIn(max = 200.dp)) {
+                        items(branches) { branch ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { selectedBranch = branch }
+                                    .padding(vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                RadioButton(
+                                    selected = selectedBranch == branch,
+                                    onClick = { selectedBranch = branch }
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text(branch.name)
+                            }
+                        }
+                    }
+
+                    Spacer(Modifier.height(16.dp))
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.clickable { fastForwardOnly = !fastForwardOnly }
+                    ) {
+                        Checkbox(
+                            checked = fastForwardOnly,
+                            onCheckedChange = { fastForwardOnly = it }
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text("Fast-forward only")
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { selectedBranch?.let { onMerge(it.name, fastForwardOnly) } },
+                enabled = selectedBranch != null
+            ) {
+                Text("Merge")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
+}
+
+// ========== Remote Management UI ==========
+
+@Composable
+fun RemotesDialog(
+    remotes: List<RemoteInfo>,
+    onAddRemote: (String, String) -> Unit,
+    onRemoveRemote: (String) -> Unit,
+    onUpdateRemote: (String, String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var showAddDialog by remember { mutableStateOf(false) }
+    var editingRemote by remember { mutableStateOf<RemoteInfo?>(null) }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth(0.9f)
+                .fillMaxHeight(0.7f),
+            shape = MaterialTheme.shapes.extraLarge
+        ) {
+            Column(modifier = Modifier.padding(24.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Remotes", style = MaterialTheme.typography.headlineSmall)
+                    IconButton(onClick = { showAddDialog = true }) {
+                        Icon(Icons.Default.Add, contentDescription = "Add Remote")
+                    }
+                }
+
+                Spacer(Modifier.height(16.dp))
+
+                if (remotes.isEmpty()) {
+                    Box(
+                        modifier = Modifier.weight(1f).fillMaxWidth(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            "No remotes configured",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.outline
+                        )
+                    }
+                } else {
+                    LazyColumn(modifier = Modifier.weight(1f)) {
+                        items(remotes) { remote ->
+                            ListItem(
+                                headlineContent = { Text(remote.name, fontWeight = FontWeight.Medium) },
+                                supportingContent = {
+                                    Column {
+                                        Text("Fetch: ${remote.fetchUrl}", style = MaterialTheme.typography.bodySmall)
+                                        if (remote.pushUrl != remote.fetchUrl) {
+                                            Text("Push: ${remote.pushUrl}", style = MaterialTheme.typography.bodySmall)
+                                        }
+                                    }
+                                },
+                                trailingContent = {
+                                    Row {
+                                        IconButton(onClick = { editingRemote = remote }) {
+                                            Icon(Icons.Default.Edit, contentDescription = "Edit")
+                                        }
+                                        IconButton(onClick = { onRemoveRemote(remote.name) }) {
+                                            Icon(Icons.Default.Delete, contentDescription = "Remove", tint = MaterialTheme.colorScheme.error)
+                                        }
+                                    }
+                                }
+                            )
+                            HorizontalDivider()
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(16.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    TextButton(onClick = onDismiss) { Text("Close") }
+                }
+            }
+        }
+    }
+
+    if (showAddDialog) {
+        AddRemoteDialog(
+            onAdd = { name, url ->
+                onAddRemote(name, url)
+                showAddDialog = false
+            },
+            onDismiss = { showAddDialog = false }
+        )
+    }
+
+    editingRemote?.let { remote ->
+        EditRemoteDialog(
+            remote = remote,
+            onSave = { url ->
+                onUpdateRemote(remote.name, url)
+                editingRemote = null
+            },
+            onDismiss = { editingRemote = null }
+        )
+    }
+}
+
+@Composable
+fun AddRemoteDialog(
+    onAdd: (String, String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var name by remember { mutableStateOf("") }
+    var url by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Add Remote") },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("Name") },
+                    placeholder = { Text("origin") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = url,
+                    onValueChange = { url = it },
+                    label = { Text("URL") },
+                    placeholder = { Text("https://github.com/user/repo.git") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onAdd(name, url) },
+                enabled = name.isNotBlank() && url.isNotBlank()
+            ) {
+                Text("Add")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
+}
+
+@Composable
+fun EditRemoteDialog(
+    remote: RemoteInfo,
+    onSave: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var url by remember { mutableStateOf(remote.fetchUrl) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Edit Remote: ${remote.name}") },
+        text = {
+            OutlinedTextField(
+                value = url,
+                onValueChange = { url = it },
+                label = { Text("URL") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+        },
+        confirmButton = {
+            Button(
+                onClick = { onSave(url) },
+                enabled = url.isNotBlank()
+            ) {
+                Text("Save")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
+}
+
+// ========== Conflict Resolution UI ==========
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ConflictResolveDialog(
+    conflictFile: ConflictFile,
+    onResolve: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var selectedOption by remember { mutableIntStateOf(-1) } // -1: none, 0: ours, 1: theirs, 2: manual
+    var manualContent by remember { mutableStateOf(conflictFile.oursContent) }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = MaterialTheme.colorScheme.background
+        ) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                TopAppBar(
+                    title = { Text("Resolve: ${conflictFile.path.substringAfterLast("/")}", maxLines = 1) },
+                    navigationIcon = {
+                        IconButton(onClick = onDismiss) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Close")
+                        }
+                    },
+                    actions = {
+                        Button(
+                            onClick = {
+                                val content = when (selectedOption) {
+                                    0 -> conflictFile.oursContent
+                                    1 -> conflictFile.theirsContent
+                                    2 -> manualContent
+                                    else -> return@Button
+                                }
+                                onResolve(content)
+                            },
+                            enabled = selectedOption >= 0
+                        ) {
+                            Text("Apply")
+                        }
+                    }
+                )
+
+                // Resolution options
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text("Choose resolution:", style = MaterialTheme.typography.titleMedium)
+                    Spacer(Modifier.height(8.dp))
+
+                    // Option: Use Ours
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { selectedOption = 0 }
+                            .padding(vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(selected = selectedOption == 0, onClick = { selectedOption = 0 })
+                        Spacer(Modifier.width(8.dp))
+                        Column {
+                            Text("Keep Ours (Current branch)", fontWeight = FontWeight.Medium)
+                            Text("Keep your version", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
+                        }
+                    }
+
+                    // Option: Use Theirs
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { selectedOption = 1 }
+                            .padding(vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(selected = selectedOption == 1, onClick = { selectedOption = 1 })
+                        Spacer(Modifier.width(8.dp))
+                        Column {
+                            Text("Accept Theirs (Incoming)", fontWeight = FontWeight.Medium)
+                            Text("Use the incoming version", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
+                        }
+                    }
+
+                    // Option: Manual Edit
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { selectedOption = 2 }
+                            .padding(vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(selected = selectedOption == 2, onClick = { selectedOption = 2 })
+                        Spacer(Modifier.width(8.dp))
+                        Column {
+                            Text("Manual Edit", fontWeight = FontWeight.Medium)
+                            Text("Edit the content manually", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
+                        }
+                    }
+                }
+
+                HorizontalDivider()
+
+                // Content preview/edit
+                when (selectedOption) {
+                    0 -> {
+                        Text(
+                            "Ours (Current)",
+                            style = MaterialTheme.typography.labelLarge,
+                            modifier = Modifier.padding(16.dp)
+                        )
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp)
+                                .background(MaterialTheme.colorScheme.surfaceVariant)
+                                .padding(8.dp)
+                                .verticalScroll(rememberScrollState())
+                        ) {
+                            Text(
+                                conflictFile.oursContent,
+                                fontFamily = JetBrainsMono,
+                                fontSize = 12.sp
+                            )
+                        }
+                    }
+                    1 -> {
+                        Text(
+                            "Theirs (Incoming)",
+                            style = MaterialTheme.typography.labelLarge,
+                            modifier = Modifier.padding(16.dp)
+                        )
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp)
+                                .background(MaterialTheme.colorScheme.surfaceVariant)
+                                .padding(8.dp)
+                                .verticalScroll(rememberScrollState())
+                        ) {
+                            Text(
+                                conflictFile.theirsContent,
+                                fontFamily = JetBrainsMono,
+                                fontSize = 12.sp
+                            )
+                        }
+                    }
+                    2 -> {
+                        Text(
+                            "Edit Content",
+                            style = MaterialTheme.typography.labelLarge,
+                            modifier = Modifier.padding(16.dp)
+                        )
+                        OutlinedTextField(
+                            value = manualContent,
+                            onValueChange = { manualContent = it },
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp),
+                            textStyle = TextStyle(fontFamily = JetBrainsMono, fontSize = 12.sp)
+                        )
+                    }
+                    else -> {
+                        // Show both versions side by side hint
+                        Box(
+                            modifier = Modifier.weight(1f).fillMaxWidth(),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                "Select a resolution option above",
+                                color = MaterialTheme.colorScheme.outline
+                            )
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(16.dp))
+            }
+        }
+    }
 }
