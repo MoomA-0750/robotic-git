@@ -20,6 +20,7 @@ import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -85,11 +86,11 @@ fun RepoDetailScreen(
     var commitMessage by remember { mutableStateOf("") }
     val pagerState = rememberPagerState(pageCount = { 4 })
     
-    var diffFile by remember { mutableStateOf<String?>(null) }
-    var diffText by remember { mutableStateOf<String?>(null) }
-    
-    var editingPath by remember { mutableStateOf<String?>(null) }
-    var editingText by remember { mutableStateOf("") }
+    var diffFile by rememberSaveable { mutableStateOf<String?>(null) }
+    var diffText by rememberSaveable { mutableStateOf<String?>(null) }
+
+    var editingPath by rememberSaveable { mutableStateOf<String?>(null) }
+    var editingText by rememberSaveable { mutableStateOf("") }
 
     var selectedCommit by remember { mutableStateOf<RevCommit?>(null) }
     var commitChanges by remember { mutableStateOf<List<CommitChange>>(emptyList()) }
@@ -328,12 +329,12 @@ fun RepoDetailScreen(
             )
         }
 
-        if (branchToDelete != null) {
+        branchToDelete?.let { branch ->
             DeleteBranchDialog(
-                branchName = branchToDelete!!.name,
+                branchName = branch.name,
                 onDismiss = { branchToDelete = null },
                 onConfirm = { force ->
-                    viewModel.deleteBranch(branchToDelete!!.name, force)
+                    viewModel.deleteBranch(branch.name, force)
                     branchToDelete = null
                 }
             )
@@ -350,13 +351,13 @@ fun RepoDetailScreen(
             )
         }
 
-        if (editingPath != null) {
+        editingPath?.let { path ->
             EditorDialog(
-                fileName = editingPath!!.substringAfterLast("/"),
+                fileName = path.substringAfterLast("/"),
                 content = editingText,
                 onContentChange = { editingText = it },
                 onSave = {
-                    viewModel.saveFile(editingPath!!, editingText)
+                    viewModel.saveFile(path, editingText)
                     editingPath = null
                 },
                 onDismiss = { editingPath = null },
@@ -364,15 +365,15 @@ fun RepoDetailScreen(
             )
         }
 
-        if (selectedCommit != null) {
+        selectedCommit?.let { commit ->
             CommitDetailDialog(
-                commit = selectedCommit!!,
+                commit = commit,
                 changes = commitChanges,
                 getGravatarUrl = viewModel::getGravatarUrl,
                 onFileClick = { path ->
                     diffFile = path
                     scope.launch {
-                        diffText = viewModel.getCommitFileDiff(selectedCommit!!, path)
+                        diffText = viewModel.getCommitFileDiff(commit, path)
                     }
                 },
                 onDismiss = {
@@ -426,11 +427,13 @@ fun RepoDetailScreen(
         }
 
         // Conflict resolution dialog
-        if (conflictFileToResolve != null && conflictContent != null) {
+        val currentConflictPath = conflictFileToResolve
+        val currentConflictContent = conflictContent
+        if (currentConflictPath != null && currentConflictContent != null) {
             ConflictResolveDialog(
-                conflictFile = conflictContent!!,
+                conflictFile = currentConflictContent,
                 onResolve = { resolvedContent ->
-                    viewModel.resolveConflict(conflictFileToResolve!!, resolvedContent)
+                    viewModel.resolveConflict(currentConflictPath, resolvedContent)
                     conflictFileToResolve = null
                     conflictContent = null
                 },
