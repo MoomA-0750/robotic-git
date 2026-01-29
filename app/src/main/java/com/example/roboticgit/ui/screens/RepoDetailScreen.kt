@@ -13,6 +13,9 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -26,6 +29,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
@@ -75,7 +80,6 @@ fun RepoDetailScreen(
     val context = LocalContext.current
     val authManager = remember { AuthManager(context) }
     val rootDir = remember { File(authManager.getDefaultCloneDir()) }
-    val editorFontSize = remember { authManager.getEditorFontSize() }
 
     val viewModel: RepoDetailViewModel = viewModel(
         factory = RepoDetailViewModelFactory(authManager, rootDir, repoName)
@@ -361,7 +365,7 @@ fun RepoDetailScreen(
                     editingPath = null
                 },
                 onDismiss = { editingPath = null },
-                fontSize = editorFontSize
+                fontSize = authManager.getEditorFontSize().toFloat()
             )
         }
 
@@ -950,8 +954,12 @@ fun EditorDialog(
     onContentChange: (String) -> Unit,
     onSave: () -> Unit,
     onDismiss: () -> Unit,
-    fontSize: Int = 14
+    fontSize: Float = 14f,
+    onFontSizeChange: ((Float) -> Unit)? = null
 ) {
+    // Local state for dynamic font size during pinch gestures
+    var currentFontSize by rememberSaveable { mutableStateOf(fontSize) }
+
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false)
@@ -962,7 +970,16 @@ fun EditorDialog(
         ) {
             Column(modifier = Modifier.fillMaxSize()) {
                 TopAppBar(
-                    title = { Text("Edit: $fileName", maxLines = 1) },
+                    title = {
+                        Column {
+                            Text("Edit: $fileName", maxLines = 1)
+                            Text(
+                                text = "Font: ${"%.1f".format(currentFontSize)}sp",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    },
                     navigationIcon = {
                         IconButton(onClick = onDismiss) {
                             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Close")
@@ -979,7 +996,11 @@ fun EditorDialog(
                     value = content,
                     onValueChange = onContentChange,
                     modifier = Modifier.weight(1f),
-                    fontSize = fontSize
+                    fontSize = currentFontSize,
+                    onFontSizeChange = { newSize ->
+                        currentFontSize = newSize
+                        onFontSizeChange?.invoke(newSize)
+                    }
                 )
             }
         }
@@ -991,10 +1012,16 @@ fun CodeEditor(
     value: String,
     onValueChange: (String) -> Unit,
     modifier: Modifier = Modifier,
-    fontSize: Int = 14
+    fontSize: Float = 14f,
+    onFontSizeChange: ((Float) -> Unit)? = null
 ) {
     val scrollState = rememberScrollState()
-    var textLayoutResult by remember { mutableStateOf<TextLayoutResult?>(null) }
+    // Reset layout when value length changes significantly to avoid stale layout issues
+    var textLayoutResult by remember(value.length) { mutableStateOf<TextLayoutResult?>(null) }
+
+    // Track base font size at gesture start and accumulated scale
+    var baseFontSize by remember { mutableStateOf(fontSize) }
+    var cumulativeScale by remember { mutableStateOf(1f) }
 
     val fontSizeSp = fontSize.sp
     val lineHeightSp = (fontSize * 1.5f).sp
@@ -1010,8 +1037,42 @@ fun CodeEditor(
     val whitespaceColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.2f)
     val whitespaceTransformation = remember(whitespaceColor) { WhitespaceVisualTransformation(whitespaceColor) }
 
+    // Pinch gesture modifier - smooth continuous zoom with stabilization
+    val pinchModifier = if (onFontSizeChange != null) {
+        Modifier.pointerInput(Unit) {
+            awaitEachGesture {
+                awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                // Reset at gesture start
+                baseFontSize = fontSize
+                cumulativeScale = 1f
+
+                do {
+                    val event = awaitPointerEvent(PointerEventPass.Initial)
+                    // Only process when 2+ fingers are down
+                    if (event.changes.size >= 2) {
+                        val zoom = event.calculateZoom()
+                        // Dead zone to filter noise (ignore very small changes)
+                        if (zoom != 1f && (zoom > 1.01f || zoom < 0.99f)) {
+                            cumulativeScale *= zoom
+                            // Calculate new size from base, not current (prevents oscillation)
+                            val newSize = (baseFontSize * cumulativeScale).coerceIn(8f, 32f)
+                            if (kotlin.math.abs(newSize - fontSize) > 0.1f) {
+                                onFontSizeChange(newSize)
+                            }
+                            // Consume to prevent scrolling during pinch
+                            event.changes.forEach { it.consume() }
+                        }
+                    }
+                } while (event.changes.any { it.pressed })
+            }
+        }
+    } else {
+        Modifier
+    }
+
     Row(modifier = modifier
         .fillMaxSize()
+        .then(pinchModifier)
         .background(MaterialTheme.colorScheme.surface)) {
 
         Box(
@@ -1044,41 +1105,47 @@ fun CodeEditor(
         ) {
             Canvas(modifier = Modifier.matchParentSize()) {
                 val layout = textLayoutResult ?: return@Canvas
-                if (layout.lineCount == 0) return@Canvas
+                if (layout.lineCount == 0 || value.isEmpty()) return@Canvas
 
                 val charWidth = fontSizeSp.toPx() * 0.6f
-                val tabWidth = charWidth * 4
 
-                for (lineIndex in 0 until layout.lineCount) {
-                    val lineStart = layout.getLineStart(lineIndex)
-                    val lineEnd = layout.getLineEnd(lineIndex)
-                    if (lineStart >= value.length) continue
-                    val lineText = value.substring(lineStart, minOf(lineEnd, value.length))
+                try {
+                    for (lineIndex in 0 until layout.lineCount) {
+                        val lineStart = layout.getLineStart(lineIndex)
+                        val lineEnd = layout.getLineEnd(lineIndex)
+                        // Safety check: ensure indices are within bounds
+                        if (lineStart < 0 || lineStart >= value.length) continue
+                        val safeEnd = lineEnd.coerceIn(lineStart, value.length)
+                        val lineText = value.substring(lineStart, safeEnd)
 
-                    var leadingSpaces = 0
-                    for (char in lineText) {
-                        when (char) {
-                            ' ' -> leadingSpaces++
-                            '\t' -> leadingSpaces += 4
-                            else -> break
+                        var leadingSpaces = 0
+                        for (char in lineText) {
+                            when (char) {
+                                ' ' -> leadingSpaces++
+                                '\t' -> leadingSpaces += 4
+                                else -> break
+                            }
+                        }
+
+                        val indentLevels = leadingSpaces / 4
+                        if (indentLevels > 0) {
+                            val top = layout.getLineTop(lineIndex)
+                            val bottom = layout.getLineBottom(lineIndex)
+
+                            for (level in 1..indentLevels) {
+                                val x = (level * 4 - 2) * charWidth
+                                drawLine(
+                                    color = guideColor,
+                                    start = Offset(x, top),
+                                    end = Offset(x, bottom),
+                                    strokeWidth = 1f
+                                )
+                            }
                         }
                     }
-
-                    val indentLevels = leadingSpaces / 4
-                    if (indentLevels > 0) {
-                        val top = layout.getLineTop(lineIndex)
-                        val bottom = layout.getLineBottom(lineIndex)
-
-                        for (level in 1..indentLevels) {
-                            val x = (level * 4 - 2) * charWidth
-                            drawLine(
-                                color = guideColor,
-                                start = Offset(x, top),
-                                end = Offset(x, bottom),
-                                strokeWidth = 1f
-                            )
-                        }
-                    }
+                } catch (_: IndexOutOfBoundsException) {
+                    // Ignore layout calculation errors during recomposition
+                    // This can happen when textLayoutResult is stale after configuration change
                 }
             }
 
