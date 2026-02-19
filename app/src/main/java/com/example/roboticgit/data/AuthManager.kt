@@ -1,6 +1,7 @@
 package com.example.roboticgit.data
 
 import android.content.Context
+import android.content.SharedPreferences
 import android.os.Environment
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKeys
@@ -10,17 +11,46 @@ import com.example.roboticgit.data.model.ThemeMode
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.File
+import java.security.KeyStore
 
 class AuthManager(context: Context) {
-    private val masterKeyAlias = MasterKeys.getOrCreate(MasterKeys.AES256_GCM_SPEC)
     
-    private val prefs = EncryptedSharedPreferences.create(
+    private val prefs: SharedPreferences = try {
+        createPrefs(context)
+    } catch (e: Exception) {
+        // If decryption or key loading fails (e.g. AEADBadTagException or Keystore issues),
+        // we clear corrupted data and try again for a fresh start.
+        clearCorruptedData(context)
+        createPrefs(context)
+    }
+
+    private fun createPrefs(context: Context): SharedPreferences = EncryptedSharedPreferences.create(
         "auth_prefs",
-        masterKeyAlias,
+        MasterKeys.getOrCreate(MasterKeys.AES256_GCM_SPEC),
         context,
         EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
         EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
     )
+
+    private fun clearCorruptedData(context: Context) {
+        try {
+            // Delete the shared preferences file manually
+            val sharedPrefsFile = File(context.filesDir.parent, "shared_prefs/auth_prefs.xml")
+            if (sharedPrefsFile.exists()) {
+                sharedPrefsFile.delete()
+            }
+            
+            // Delete the master key from Keystore to ensure it gets re-generated
+            val keyStore = KeyStore.getInstance("AndroidKeyStore")
+            keyStore.load(null)
+            val masterKeyAlias = "_androidx_security_master_key_"
+            if (keyStore.containsAlias(masterKeyAlias)) {
+                keyStore.deleteEntry(masterKeyAlias)
+            }
+        } catch (e: Exception) {
+            // Ignore errors during cleanup
+        }
+    }
 
     private val json = Json { ignoreUnknownKeys = true }
 
