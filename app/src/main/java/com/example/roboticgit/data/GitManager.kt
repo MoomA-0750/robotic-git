@@ -396,7 +396,19 @@ class GitManager(private val rootDir: File) {
     suspend fun push(repo: GitRepo, token: String? = null): Result<Unit> = withContext(Dispatchers.IO) {
         try {
             Git.open(repo.localPath).use { git ->
-                val pushCommand = git.push()
+                // Check if a remote is configured before attempting push
+                val config = git.repository.config
+                val remotes = config.getSubsections("remote")
+                if (remotes.isEmpty()) {
+                    return@withContext Result.failure(Exception("No remote configured. Add a remote first."))
+                }
+                val remoteName = if (remotes.contains("origin")) "origin" else remotes.first()
+                val remoteUrl = config.getString("remote", remoteName, "url")
+                if (remoteUrl.isNullOrBlank()) {
+                    return@withContext Result.failure(Exception("Remote '$remoteName' has no URL configured."))
+                }
+
+                val pushCommand = git.push().setRemote(remoteName)
                 if (!token.isNullOrBlank()) {
                     pushCommand.setCredentialsProvider(UsernamePasswordCredentialsProvider("token", token))
                 }
@@ -411,7 +423,20 @@ class GitManager(private val rootDir: File) {
     suspend fun pull(repo: GitRepo, token: String? = null): Result<Unit> = withContext(Dispatchers.IO) {
         try {
             Git.open(repo.localPath).use { git ->
-                val pullCommand = git.pull()
+                // Check if a remote is configured before attempting pull
+                val config = git.repository.config
+                val remotes = config.getSubsections("remote")
+                if (remotes.isEmpty()) {
+                    return@withContext Result.failure(Exception("No remote configured. Add a remote first."))
+                }
+                // Use the first available remote if "origin" doesn't exist
+                val remoteName = if (remotes.contains("origin")) "origin" else remotes.first()
+                val remoteUrl = config.getString("remote", remoteName, "url")
+                if (remoteUrl.isNullOrBlank()) {
+                    return@withContext Result.failure(Exception("Remote '$remoteName' has no URL configured."))
+                }
+
+                val pullCommand = git.pull().setRemote(remoteName)
                 if (!token.isNullOrBlank()) {
                     pullCommand.setCredentialsProvider(UsernamePasswordCredentialsProvider("token", token))
                 }

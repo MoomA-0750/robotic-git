@@ -149,15 +149,51 @@ class RepoDetailViewModel(
 
     fun push() {
         viewModelScope.launch {
-             gitManager.push(repo)
+            val token = findTokenForRepo()
+            val result = gitManager.push(repo, token)
+            if (result.isFailure) {
+                _errorMessage.value = "Push failed: ${result.exceptionOrNull()?.message}"
+            }
         }
     }
 
-     fun pull() {
+    fun pull() {
         viewModelScope.launch {
-             gitManager.pull(repo)
-             loadData()
+            val token = findTokenForRepo()
+            val result = gitManager.pull(repo, token)
+            if (result.isFailure) {
+                _errorMessage.value = "Pull failed: ${result.exceptionOrNull()?.message}"
+            }
+            loadData()
         }
+    }
+
+    /**
+     * Find an appropriate auth token for this repo by matching the remote URL
+     * against saved accounts.
+     */
+    private suspend fun findTokenForRepo(): String? {
+        val accounts = authManager.getAccounts()
+        if (accounts.isEmpty()) return null
+
+        // Try to match remote URL to an account
+        val remotes = gitManager.listRemotes(repo).getOrNull() ?: return accounts.firstOrNull()?.token
+        val remoteUrl = remotes.firstOrNull()?.fetchUrl ?: return accounts.firstOrNull()?.token
+
+        // Match by base URL
+        for (account in accounts) {
+            val baseUrl = account.baseUrl
+            if (baseUrl != null && remoteUrl.contains(baseUrl.removeSuffix("/").removePrefix("https://").removePrefix("http://"))) {
+                return account.token
+            }
+            // GitHub account matches github.com URLs
+            if (account.type == com.example.roboticgit.data.model.AccountType.GITHUB && remoteUrl.contains("github.com")) {
+                return account.token
+            }
+        }
+
+        // Fallback to first account
+        return accounts.firstOrNull()?.token
     }
 
     fun createBranch(name: String) {

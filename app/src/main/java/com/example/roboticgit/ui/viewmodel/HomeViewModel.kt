@@ -4,9 +4,12 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.example.roboticgit.data.AuthManager
+import com.example.roboticgit.data.GiteaApiService
 import com.example.roboticgit.data.GitHubApiService
+import com.example.roboticgit.data.GitLabApiService
 import com.example.roboticgit.data.GitManager
 import com.example.roboticgit.data.model.Account
+import com.example.roboticgit.data.model.AccountType
 import com.example.roboticgit.data.model.GitRepo
 import com.example.roboticgit.data.model.RemoteRepo
 import kotlinx.coroutines.async
@@ -177,16 +180,80 @@ class HomeViewModel(
 
         viewModelScope.launch {
             try {
-                val retrofit = Retrofit.Builder()
-                    .baseUrl(account.baseUrl ?: "https://api.github.com/")
-                    .client(httpClient)
-                    .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
-                    .build()
-
-                val service = retrofit.create(GitHubApiService::class.java)
-                _remoteRepos.value = service.getUserRepos("Bearer ${account.token}")
+                _remoteRepos.value = when (account.type) {
+                    AccountType.GITHUB -> fetchGitHubRepos(account)
+                    AccountType.GITEA -> fetchGiteaRepos(account)
+                    AccountType.GITLAB -> fetchGitLabRepos(account)
+                    AccountType.CUSTOM -> fetchCustomRepos(account)
+                }
             } catch (e: Exception) {
                 _remoteRepos.value = emptyList()
+            }
+        }
+    }
+
+    private suspend fun fetchGitHubRepos(account: Account): List<RemoteRepo> {
+        val retrofit = Retrofit.Builder()
+            .baseUrl(account.baseUrl ?: "https://api.github.com/")
+            .client(httpClient)
+            .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
+            .build()
+        val service = retrofit.create(GitHubApiService::class.java)
+        return service.getUserRepos("Bearer ${account.token}")
+    }
+
+    private suspend fun fetchGiteaRepos(account: Account): List<RemoteRepo> {
+        val baseUrl = account.baseUrl ?: return emptyList()
+        val retrofit = Retrofit.Builder()
+            .baseUrl(baseUrl)
+            .client(httpClient)
+            .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
+            .build()
+        val service = retrofit.create(GiteaApiService::class.java)
+        val giteaRepos = service.getUserRepos("token ${account.token}")
+        return giteaRepos.map { repo ->
+            RemoteRepo(
+                id = repo.id,
+                name = repo.name,
+                fullName = repo.fullName,
+                cloneUrl = repo.cloneUrl,
+                private = repo.private,
+                description = repo.description
+            )
+        }
+    }
+
+    private suspend fun fetchGitLabRepos(account: Account): List<RemoteRepo> {
+        val baseUrl = account.baseUrl ?: return emptyList()
+        val retrofit = Retrofit.Builder()
+            .baseUrl(baseUrl)
+            .client(httpClient)
+            .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
+            .build()
+        val service = retrofit.create(GitLabApiService::class.java)
+        val gitlabProjects = service.getUserProjects(account.token)
+        return gitlabProjects.map { project ->
+            RemoteRepo(
+                id = project.id,
+                name = project.name,
+                fullName = project.fullName,
+                cloneUrl = project.cloneUrl,
+                private = project.visibility == "private",
+                description = project.description
+            )
+        }
+    }
+
+    private suspend fun fetchCustomRepos(account: Account): List<RemoteRepo> {
+        val baseUrl = account.baseUrl ?: return emptyList()
+        // Try Gitea API first, then GitLab
+        return try {
+            fetchGiteaRepos(account)
+        } catch (e: Exception) {
+            try {
+                fetchGitLabRepos(account)
+            } catch (e2: Exception) {
+                emptyList()
             }
         }
     }

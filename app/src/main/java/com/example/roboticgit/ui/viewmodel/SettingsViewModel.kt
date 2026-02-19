@@ -7,8 +7,10 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.example.roboticgit.data.AuthManager
+import com.example.roboticgit.data.GiteaApiService
 import com.example.roboticgit.data.GitHubApiService
 import com.example.roboticgit.data.GitHubOAuthConstants
+import com.example.roboticgit.data.GitLabApiService
 import com.example.roboticgit.data.model.Account
 import com.example.roboticgit.data.model.AccountType
 import com.example.roboticgit.data.model.AppFont
@@ -169,6 +171,140 @@ class SettingsViewModel(private val authManager: AuthManager) : ViewModel() {
                 _validationStatus.value = ValidationStatus.Error(e.message ?: "Invalid token")
             }
         }
+    }
+
+    fun addGiteaAccount(baseUrl: String, token: String) {
+        viewModelScope.launch {
+            _validationStatus.value = ValidationStatus.Loading
+            try {
+                val url = normalizeBaseUrl(baseUrl)
+                val giteaRetrofit = Retrofit.Builder()
+                    .baseUrl(url)
+                    .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
+                    .build()
+                val giteaService = giteaRetrofit.create(GiteaApiService::class.java)
+                val user = giteaService.getUser("token $token")
+                val account = Account(
+                    name = user.login,
+                    type = AccountType.GITEA,
+                    token = token,
+                    avatarUrl = user.avatarUrl,
+                    baseUrl = url
+                )
+                authManager.addAccount(account)
+                _accounts.value = authManager.getAccounts()
+                _validationStatus.value = ValidationStatus.Success
+            } catch (e: Exception) {
+                _validationStatus.value = ValidationStatus.Error(
+                    e.message ?: "Failed to connect to Gitea instance"
+                )
+            }
+        }
+    }
+
+    fun addGitLabAccount(baseUrl: String, token: String) {
+        viewModelScope.launch {
+            _validationStatus.value = ValidationStatus.Loading
+            try {
+                val url = normalizeBaseUrl(baseUrl)
+                val gitlabRetrofit = Retrofit.Builder()
+                    .baseUrl(url)
+                    .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
+                    .build()
+                val gitlabService = gitlabRetrofit.create(GitLabApiService::class.java)
+                val user = gitlabService.getUser(token)
+                val account = Account(
+                    name = user.username,
+                    type = AccountType.GITLAB,
+                    token = token,
+                    avatarUrl = user.avatarUrl,
+                    baseUrl = url
+                )
+                authManager.addAccount(account)
+                _accounts.value = authManager.getAccounts()
+                _validationStatus.value = ValidationStatus.Success
+            } catch (e: Exception) {
+                _validationStatus.value = ValidationStatus.Error(
+                    e.message ?: "Failed to connect to GitLab instance"
+                )
+            }
+        }
+    }
+
+    fun addCustomAccount(baseUrl: String, token: String) {
+        viewModelScope.launch {
+            _validationStatus.value = ValidationStatus.Loading
+            try {
+                val url = normalizeBaseUrl(baseUrl)
+                // Try Gitea API first, then GitLab API, then fall back to manual
+                val account = tryGiteaApi(url, token)
+                    ?: tryGitLabApi(url, token)
+                    ?: Account(
+                        name = Uri.parse(url).host ?: "custom",
+                        type = AccountType.CUSTOM,
+                        token = token,
+                        baseUrl = url
+                    )
+                authManager.addAccount(account)
+                _accounts.value = authManager.getAccounts()
+                _validationStatus.value = ValidationStatus.Success
+            } catch (e: Exception) {
+                _validationStatus.value = ValidationStatus.Error(
+                    e.message ?: "Failed to add account"
+                )
+            }
+        }
+    }
+
+    private suspend fun tryGiteaApi(url: String, token: String): Account? {
+        return try {
+            val giteaRetrofit = Retrofit.Builder()
+                .baseUrl(url)
+                .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
+                .build()
+            val giteaService = giteaRetrofit.create(GiteaApiService::class.java)
+            val user = giteaService.getUser("token $token")
+            Account(
+                name = user.login,
+                type = AccountType.CUSTOM,
+                token = token,
+                avatarUrl = user.avatarUrl,
+                baseUrl = url
+            )
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private suspend fun tryGitLabApi(url: String, token: String): Account? {
+        return try {
+            val gitlabRetrofit = Retrofit.Builder()
+                .baseUrl(url)
+                .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
+                .build()
+            val gitlabService = gitlabRetrofit.create(GitLabApiService::class.java)
+            val user = gitlabService.getUser(token)
+            Account(
+                name = user.username,
+                type = AccountType.CUSTOM,
+                token = token,
+                avatarUrl = user.avatarUrl,
+                baseUrl = url
+            )
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun normalizeBaseUrl(url: String): String {
+        var normalized = url.trim()
+        if (!normalized.startsWith("http://") && !normalized.startsWith("https://")) {
+            normalized = "https://$normalized"
+        }
+        if (!normalized.endsWith("/")) {
+            normalized = "$normalized/"
+        }
+        return normalized
     }
 
     fun removeAccount(id: String) {

@@ -115,36 +115,36 @@ fun AccountsScreen(
                     }
                     AccountType.GITLAB -> {
                         AddGitLabAccountDialog(
-                            onDismiss = { 
+                            onDismiss = {
                                 showAddDialog = false
                                 selectedService = null
                             },
                             onAdd = { url, token ->
-                                // TODO: Implement GitLab add
+                                viewModel.addGitLabAccount(url, token)
                             },
                             validationStatus = validationStatus
                         )
                     }
                     AccountType.GITEA -> {
                         AddGiteaAccountDialog(
-                            onDismiss = { 
+                            onDismiss = {
                                 showAddDialog = false
                                 selectedService = null
                             },
                             onAdd = { url, token ->
-                                // TODO: Implement Gitea add
+                                viewModel.addGiteaAccount(url, token)
                             },
                             validationStatus = validationStatus
                         )
                     }
                     AccountType.CUSTOM -> {
                         AddCustomAccountDialog(
-                            onDismiss = { 
+                            onDismiss = {
                                 showAddDialog = false
                                 selectedService = null
                             },
                             onAdd = { url, token ->
-                                // // TODO: Implement Custom add (Generic Git)
+                                viewModel.addCustomAccount(url, token)
                             },
                             validationStatus = validationStatus
                         )
