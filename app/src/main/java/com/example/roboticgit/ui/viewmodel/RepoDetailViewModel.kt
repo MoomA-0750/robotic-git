@@ -149,14 +149,27 @@ class RepoDetailViewModel(
 
     fun push() {
         viewModelScope.launch {
-             gitManager.push(repo)
+            val token = authManager.getAccounts().firstOrNull()?.token
+            val result = gitManager.push(repo, token)
+            if (result.isSuccess) {
+                _errorMessage.value = "Push successful"
+                loadData()
+            } else {
+                _errorMessage.value = "Push failed: ${result.exceptionOrNull()?.message}"
+            }
         }
     }
 
-     fun pull() {
+    fun pull() {
         viewModelScope.launch {
-             gitManager.pull(repo)
-             loadData()
+            val token = authManager.getAccounts().firstOrNull()?.token
+            val result = gitManager.pull(repo, token)
+            if (result.isSuccess) {
+                _errorMessage.value = "Pull successful"
+                loadData()
+            } else {
+                _errorMessage.value = "Pull failed: ${result.exceptionOrNull()?.message}"
+            }
         }
     }
 

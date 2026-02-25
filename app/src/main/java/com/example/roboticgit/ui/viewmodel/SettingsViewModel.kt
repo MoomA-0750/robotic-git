@@ -171,9 +171,34 @@ class SettingsViewModel(private val authManager: AuthManager) : ViewModel() {
         }
     }
 
+    fun addAccountGeneric(name: String, url: String, token: String, type: AccountType) {
+        viewModelScope.launch {
+            _validationStatus.value = ValidationStatus.Loading
+            try {
+                // For Gitea/GitLab/Custom, we'll skip validation for now and just add it
+                // You might want to add API checks later
+                val account = Account(
+                    name = name,
+                    type = type,
+                    token = token,
+                    baseUrl = url
+                )
+                authManager.addAccount(account)
+                _accounts.value = authManager.getAccounts()
+                _validationStatus.value = ValidationStatus.Success
+            } catch (e: Exception) {
+                _validationStatus.value = ValidationStatus.Error(e.message ?: "Failed to add account")
+            }
+        }
+    }
+
     fun removeAccount(id: String) {
         authManager.removeAccount(id)
         _accounts.value = authManager.getAccounts()
+    }
+    
+    fun resetValidationStatus() {
+        _validationStatus.value = ValidationStatus.Idle
     }
 }
 

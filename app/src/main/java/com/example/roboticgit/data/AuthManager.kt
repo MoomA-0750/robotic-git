@@ -49,6 +49,26 @@ class AuthManager(context: Context) {
         saveAccounts(current)
     }
 
+    // ========== Repository Tracking ==========
+
+    fun getTrackedRepoPaths(): Set<String> {
+        return prefs.getStringSet("tracked_repo_paths", emptySet()) ?: emptySet()
+    }
+
+    fun addTrackedRepoPath(path: String) {
+        val current = getTrackedRepoPaths().toMutableSet()
+        current.add(path)
+        prefs.edit().putStringSet("tracked_repo_paths", current).apply()
+    }
+
+    fun removeTrackedRepoPath(path: String) {
+        val current = getTrackedRepoPaths().toMutableSet()
+        current.remove(path)
+        prefs.edit().putStringSet("tracked_repo_paths", current).apply()
+    }
+
+    // =========================================
+
     fun getDefaultCloneDir(): String {
         return prefs.getString("default_clone_dir", File(Environment.getExternalStorageDirectory(), "RoboticGit").absolutePath) ?: ""
     }

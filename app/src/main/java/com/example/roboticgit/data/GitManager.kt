@@ -40,26 +40,46 @@ class GitManager(private val rootDir: File) {
         }
     }
 
-    suspend fun listRepositories(): List<GitRepo> = withContext(Dispatchers.IO) {
+    suspend fun listRepositories(extraPaths: Set<String> = emptySet()): List<GitRepo> = withContext(Dispatchers.IO) {
         val repos = mutableListOf<GitRepo>()
+        
+        // Scan the default root directory
         rootDir.listFiles()?.forEach { file ->
             if (file.isDirectory && File(file, ".git").exists()) {
-                val lastCommitTime = try {
-                    Git.open(file).use { git ->
-                        val head = git.repository.resolve(Constants.HEAD)
-                        if (head != null) {
-                            val revWalk = RevWalk(git.repository)
-                            val commit = revWalk.parseCommit(head)
-                            commit.commitTime * 1000L // convert to milliseconds
-                        } else 0L
-                    }
-                } catch (e: Exception) {
-                    0L
-                }
-                repos.add(GitRepo(file.name, file.absolutePath, file, lastCommitTime = lastCommitTime))
+                val repo = getRepoFromDirectory(file)
+                if (repo != null) repos.add(repo)
             }
         }
-        repos
+
+        // Add repositories from extra tracked paths
+        extraPaths.forEach { path ->
+            val file = File(path)
+            if (file.exists() && file.isDirectory && File(file, ".git").exists()) {
+                // Avoid duplicates by comparing absolute paths
+                if (repos.none { it.localPath.absolutePath == file.absolutePath }) {
+                    val repo = getRepoFromDirectory(file)
+                    if (repo != null) repos.add(repo)
+                }
+            }
+        }
+        
+        repos.sortedBy { it.name }
+    }
+
+    private fun getRepoFromDirectory(directory: File): GitRepo? {
+        return try {
+            val lastCommitTime = Git.open(directory).use { git ->
+                val head = git.repository.resolve(Constants.HEAD)
+                if (head != null) {
+                    val revWalk = RevWalk(git.repository)
+                    val commit = revWalk.parseCommit(head)
+                    commit.commitTime * 1000L // convert to milliseconds
+                } else 0L
+            }
+            GitRepo(directory.name, directory.absolutePath, directory, lastCommitTime = lastCommitTime)
+        } catch (e: Exception) {
+            null
+        }
     }
 
     suspend fun cloneRepository(

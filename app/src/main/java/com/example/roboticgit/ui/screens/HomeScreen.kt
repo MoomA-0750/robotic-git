@@ -4,20 +4,18 @@ import android.text.format.DateUtils
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.pager.HorizontalPager
-import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import com.example.roboticgit.ui.theme.ShapeTokens
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
@@ -30,7 +28,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -39,7 +36,6 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
-import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.roboticgit.data.AuthManager
@@ -48,10 +44,11 @@ import com.example.roboticgit.data.model.GitRepo
 import com.example.roboticgit.data.model.RemoteRepo
 import com.example.roboticgit.ui.components.AppAlertDialog
 import com.example.roboticgit.ui.theme.ContainerTransformSpec
+import com.example.roboticgit.ui.theme.ShapeTokens
 import com.example.roboticgit.ui.viewmodel.HomeUiState
-import kotlinx.coroutines.launch
 import com.example.roboticgit.ui.viewmodel.HomeViewModel
 import com.example.roboticgit.ui.viewmodel.HomeViewModelFactory
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -84,6 +81,7 @@ fun HomeScreen(
 
     var showCloneImportDialog by remember { mutableStateOf(false) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
+    var showUntrackConfirm by remember { mutableStateOf(false) }
     var isDialogAnimating by remember { mutableStateOf(false) }
 
     var fabBounds by remember { mutableStateOf(Rect.Zero) }
@@ -107,6 +105,7 @@ fun HomeScreen(
                         onClearSelection = { viewModel.clearSelection() },
                         onFetch = { viewModel.refreshSelectedRepositories(selectedRepos) },
                         onPull = { viewModel.pullSelectedRepositories() },
+                        onUntrack = { showUntrackConfirm = true },
                         onDelete = { showDeleteConfirm = true }
                     )
                 }
@@ -206,6 +205,10 @@ fun HomeScreen(
                 onImport = { repo ->
                     viewModel.cloneRepository(repo.cloneUrl, repo.name)
                     showCloneImportDialog = false
+                },
+                onAddExisting = { path ->
+                    viewModel.addExistingRepository(path)
+                    showCloneImportDialog = false
                 }
             )
         }
@@ -235,6 +238,30 @@ fun HomeScreen(
             Text("Are you sure you want to delete ${selectedRepos.size} selected repositories from your device? This action cannot be undone.")
         }
     }
+
+    if (showUntrackConfirm) {
+        AppAlertDialog(
+            onDismissRequest = { showUntrackConfirm = false },
+            title = "Untrack Repositories",
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.untrackSelectedRepositories()
+                        showUntrackConfirm = false
+                    }
+                ) {
+                    Text("Untrack")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showUntrackConfirm = false }) {
+                    Text("Cancel")
+                }
+            }
+        ) {
+            Text("Stop tracking ${selectedRepos.size} selected repositories? The local files will NOT be deleted.")
+        }
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -246,12 +273,14 @@ fun CloneImportFullScreenDialog(
     onAccountSelect: (Account) -> Unit,
     onDismiss: () -> Unit,
     onClone: (String, String) -> Unit,
-    onImport: (RemoteRepo) -> Unit
+    onImport: (RemoteRepo) -> Unit,
+    onAddExisting: (String) -> Unit
 ) {
-    val pagerState = rememberPagerState(pageCount = { 2 })
+    val pagerState = rememberPagerState(pageCount = { 3 })
     val scope = rememberCoroutineScope()
     var manualUrl by remember { mutableStateOf("") }
     var manualName by remember { mutableStateOf("") }
+    var existingPath by remember { mutableStateOf("") }
 
     Scaffold(
         containerColor = Color.Transparent,
@@ -282,6 +311,11 @@ fun CloneImportFullScreenDialog(
                     onClick = { scope.launch { pagerState.animateScrollToPage(1) } },
                     text = { Text("Clone") }
                 )
+                Tab(
+                    selected = pagerState.currentPage == 2,
+                    onClick = { scope.launch { pagerState.animateScrollToPage(2) } },
+                    text = { Text("Path") }
+                )
             }
 
             HorizontalPager(
@@ -302,6 +336,11 @@ fun CloneImportFullScreenDialog(
                         onUrlChange = { manualUrl = it },
                         onNameChange = { manualName = it },
                         onClone = { onClone(manualUrl, manualName) }
+                    )
+                    2 -> PathTabContent(
+                        path = existingPath,
+                        onPathChange = { existingPath = it },
+                        onAdd = { onAddExisting(existingPath) }
                     )
                 }
             }
@@ -424,6 +463,41 @@ fun CloneTabContent(
     }
 }
 
+@Composable
+fun PathTabContent(
+    path: String,
+    onPathChange: (String) -> Unit,
+    onAdd: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        Text(
+            "Add an existing Git repository from your device path.",
+            style = MaterialTheme.typography.bodyMedium
+        )
+        OutlinedTextField(
+            value = path,
+            onValueChange = onPathChange,
+            label = { Text("Absolute Path to .git parent") },
+            placeholder = { Text("/storage/emulated/0/MyProjects/repo") },
+            modifier = Modifier.fillMaxWidth(),
+            shape = ShapeTokens.TextField
+        )
+        Button(
+            onClick = onAdd,
+            modifier = Modifier.fillMaxWidth(),
+            shape = ShapeTokens.Button,
+            enabled = path.isNotBlank()
+        ) {
+            Text("Track Directory")
+        }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SelectionTopBar(
@@ -431,6 +505,7 @@ fun SelectionTopBar(
     onClearSelection: () -> Unit,
     onFetch: () -> Unit,
     onPull: () -> Unit,
+    onUntrack: () -> Unit,
     onDelete: () -> Unit
 ) {
     Surface(
@@ -450,6 +525,9 @@ fun SelectionTopBar(
                 }
                 IconButton(onClick = onPull) {
                     Icon(Icons.Default.Download, contentDescription = "Pull selected")
+                }
+                IconButton(onClick = onUntrack) {
+                    Icon(Icons.Default.LinkOff, contentDescription = "Untrack selected")
                 }
                 IconButton(onClick = onDelete) {
                     Icon(Icons.Default.Delete, contentDescription = "Delete selected")
@@ -488,7 +566,7 @@ fun RepoList(
                     .padding(bottom = 8.dp)
             )
         }
-        items(repos, key = { it.name }) { repo ->
+        items(repos, key = { it.localPath.absolutePath }) { repo ->
             RepoItem(
                 repo = repo,
                 isSelected = selectedRepos.contains(repo.name),
@@ -641,7 +719,7 @@ fun RepoItem(
                 }
             } else {
                 Text(
-                    text = repo.path,
+                    text = repo.localPath.absolutePath,
                     style = MaterialTheme.typography.bodyMedium,
                     color = when {
                         isSelected -> MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
@@ -675,7 +753,7 @@ fun EmptyState(modifier: Modifier = Modifier) {
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         Text(
-            text = "Tap the Clone button to start",
+            text = "Tap the Add button to clone or add a path",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )

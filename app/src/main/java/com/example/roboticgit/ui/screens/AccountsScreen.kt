@@ -1,25 +1,56 @@
 package com.example.roboticgit.ui.screens
 
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import com.example.roboticgit.ui.components.AppAlertDialog
 import com.example.roboticgit.ui.theme.ShapeTokens
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Cloud
+import androidx.compose.material.icons.filled.Code
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Dns
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Public
+import androidx.compose.material3.Button
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.ListItem
+import androidx.compose.material3.ListItemDefaults
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.example.roboticgit.data.model.AccountType
@@ -99,13 +130,15 @@ fun AccountsScreen(
                     onDismiss = { showAddDialog = false }
                 )
             } else {
+                val onDismiss = {
+                    showAddDialog = false
+                    selectedService = null
+                    viewModel.resetValidationStatus()
+                }
                 when (service) {
                     AccountType.GITHUB -> {
                         AddGitHubAccountDialog(
-                            onDismiss = { 
-                                showAddDialog = false
-                                selectedService = null
-                            },
+                            onDismiss = onDismiss,
                             onGitHubLogin = { viewModel.startGitHubLogin(context) },
                             onManualAdd = { token ->
                                 viewModel.addGitHubAccountManual(token)
@@ -113,38 +146,12 @@ fun AccountsScreen(
                             validationStatus = validationStatus
                         )
                     }
-                    AccountType.GITLAB -> {
-                        AddGitLabAccountDialog(
-                            onDismiss = { 
-                                showAddDialog = false
-                                selectedService = null
-                            },
-                            onAdd = { url, token ->
-                                // TODO: Implement GitLab add
-                            },
-                            validationStatus = validationStatus
-                        )
-                    }
-                    AccountType.GITEA -> {
-                        AddGiteaAccountDialog(
-                            onDismiss = { 
-                                showAddDialog = false
-                                selectedService = null
-                            },
-                            onAdd = { url, token ->
-                                // TODO: Implement Gitea add
-                            },
-                            validationStatus = validationStatus
-                        )
-                    }
-                    AccountType.CUSTOM -> {
-                        AddCustomAccountDialog(
-                            onDismiss = { 
-                                showAddDialog = false
-                                selectedService = null
-                            },
-                            onAdd = { url, token ->
-                                // // TODO: Implement Custom add (Generic Git)
+                    AccountType.GITLAB, AccountType.GITEA, AccountType.CUSTOM -> {
+                        AddGenericAccountDialog(
+                            type = service,
+                            onDismiss = onDismiss,
+                            onAdd = { name, url, token ->
+                                viewModel.addAccountGeneric(name, url, token, service)
                             },
                             validationStatus = validationStatus
                         )
@@ -152,7 +159,7 @@ fun AccountsScreen(
                 }
             }
         }
-        
+
         LaunchedEffect(validationStatus) {
             if (validationStatus is ValidationStatus.Success) {
                 showAddDialog = false
@@ -273,21 +280,23 @@ fun AddGitHubAccountDialog(
 }
 
 @Composable
-fun AddGitLabAccountDialog(
+fun AddGenericAccountDialog(
+    type: AccountType,
     onDismiss: () -> Unit,
-    onAdd: (String, String) -> Unit,
+    onAdd: (String, String, String) -> Unit,
     validationStatus: ValidationStatus
 ) {
-    var url by remember { mutableStateOf("https://gitlab.com") }
+    var name by remember { mutableStateOf("") }
+    var url by remember { mutableStateOf(if (type == AccountType.GITLAB) "https://gitlab.com" else "") }
     var token by remember { mutableStateOf("") }
 
     AppAlertDialog(
         onDismissRequest = onDismiss,
-        title = "Add GitLab Account",
+        title = "Add ${type.name.lowercase().replaceFirstChar { it.uppercase() }} Account",
         confirmButton = {
             Button(
-                onClick = { onAdd(url, token) }, 
-                enabled = url.isNotBlank() && token.isNotBlank() && validationStatus !is ValidationStatus.Loading
+                onClick = { onAdd(name, url, token) }, 
+                enabled = name.isNotBlank() && url.isNotBlank() && token.isNotBlank() && validationStatus !is ValidationStatus.Loading
             ) {
                 Text("Add")
             }
@@ -296,110 +305,39 @@ fun AddGitLabAccountDialog(
             TextButton(onClick = onDismiss) { Text("Cancel") }
         }
     ) {
-        OutlinedTextField(
-            value = url,
-            onValueChange = { url = it },
-            label = { Text("GitLab URL") },
-            modifier = Modifier.fillMaxWidth(),
-            shape = ShapeTokens.TextField
-        )
-        Spacer(modifier = Modifier.height(8.dp))
-        OutlinedTextField(
-            value = token,
-            onValueChange = { token = it },
-            label = { Text("Personal Access Token") },
-            modifier = Modifier.fillMaxWidth(),
-            shape = ShapeTokens.TextField
-        )
-        if (validationStatus is ValidationStatus.Loading) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 16.dp))
-        if (validationStatus is ValidationStatus.Error) Text(validationStatus.message, color = MaterialTheme.colorScheme.error)
-    }
-}
-
-@Composable
-fun AddGiteaAccountDialog(
-    onDismiss: () -> Unit,
-    onAdd: (String, String) -> Unit,
-    validationStatus: ValidationStatus
-) {
-    var url by remember { mutableStateOf("") }
-    var token by remember { mutableStateOf("") }
-
-    AppAlertDialog(
-        onDismissRequest = onDismiss,
-        title = "Add Gitea Account",
-        confirmButton = {
-            Button(
-                onClick = { onAdd(url, token) }, 
-                enabled = url.isNotBlank() && token.isNotBlank() && validationStatus !is ValidationStatus.Loading
-            ) {
-                Text("Add")
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedTextField(
+                value = name,
+                onValueChange = { name = it },
+                label = { Text("Account Name") },
+                modifier = Modifier.fillMaxWidth(),
+                shape = ShapeTokens.TextField,
+                placeholder = { Text("e.g. My Gitea") }
+            )
+            OutlinedTextField(
+                value = url,
+                onValueChange = { url = it },
+                label = { Text("Instance URL") },
+                modifier = Modifier.fillMaxWidth(),
+                shape = ShapeTokens.TextField,
+                placeholder = { Text(if (type == AccountType.GITEA) "https://gitea.com" else "Git Server URL") }
+            )
+            OutlinedTextField(
+                value = token,
+                onValueChange = { token = it },
+                label = { Text("Access Token") },
+                modifier = Modifier.fillMaxWidth(),
+                shape = ShapeTokens.TextField
+            )
+            if (validationStatus is ValidationStatus.Loading) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 8.dp))
+            if (validationStatus is ValidationStatus.Error) {
+                Text(
+                    validationStatus.message, 
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
             }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
         }
-    ) {
-        OutlinedTextField(
-            value = url,
-            onValueChange = { url = it },
-            label = { Text("Instance URL (e.g. https://gitea.com)") },
-            modifier = Modifier.fillMaxWidth(),
-            shape = ShapeTokens.TextField
-        )
-        Spacer(modifier = Modifier.height(8.dp))
-        OutlinedTextField(
-            value = token,
-            onValueChange = { token = it },
-            label = { Text("Access Token") },
-            modifier = Modifier.fillMaxWidth(),
-            shape = ShapeTokens.TextField
-        )
-        if (validationStatus is ValidationStatus.Loading) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 16.dp))
-        if (validationStatus is ValidationStatus.Error) Text(validationStatus.message, color = MaterialTheme.colorScheme.error)
-    }
-}
-
-@Composable
-fun AddCustomAccountDialog(
-    onDismiss: () -> Unit,
-    onAdd: (String, String) -> Unit,
-    validationStatus: ValidationStatus
-) {
-    var url by remember { mutableStateOf("") }
-    var token by remember { mutableStateOf("") }
-
-    AppAlertDialog(
-        onDismissRequest = onDismiss,
-        title = "Add Custom Git Account",
-        confirmButton = {
-            Button(
-                onClick = { onAdd(url, token) }, 
-                enabled = url.isNotBlank() && token.isNotBlank() && validationStatus !is ValidationStatus.Loading
-            ) {
-                Text("Add")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
-        }
-    ) {
-        OutlinedTextField(
-            value = url,
-            onValueChange = { url = it },
-            label = { Text("Git Server URL") },
-            modifier = Modifier.fillMaxWidth(),
-            shape = ShapeTokens.TextField
-        )
-        Spacer(modifier = Modifier.height(8.dp))
-        OutlinedTextField(
-            value = token,
-            onValueChange = { token = it },
-            label = { Text("Access Token") },
-            modifier = Modifier.fillMaxWidth(),
-            shape = ShapeTokens.TextField
-        )
-        if (validationStatus is ValidationStatus.Loading) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 16.dp))
-        if (validationStatus is ValidationStatus.Error) Text(validationStatus.message, color = MaterialTheme.colorScheme.error)
     }
 }

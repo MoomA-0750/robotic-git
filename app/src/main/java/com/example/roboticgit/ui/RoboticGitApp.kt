@@ -2,7 +2,11 @@ package com.example.roboticgit.ui
 
 import androidx.compose.animation.*
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Settings
@@ -12,7 +16,9 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
@@ -300,9 +306,12 @@ fun ListDetailLayout(
     selectedRepoName: String?,
     onRepoSelected: (String) -> Unit
 ) {
+    // Draggable split ratio: fraction of total width for the list pane
+    var splitFraction by remember { mutableFloatStateOf(0.35f) }
+
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-        // Fixed list width: 360dp max, or 40% of screen for smaller displays
-        val listWidth = minOf(360.dp, maxWidth * 0.4f)
+        val totalWidthPx = with(LocalDensity.current) { maxWidth.toPx() }
+        val listWidth = maxWidth * splitFraction
 
         Row(modifier = Modifier.fillMaxSize()) {
             // List Pane
@@ -317,8 +326,30 @@ fun ListDetailLayout(
                 )
             }
 
-            // Simple Divider (no drag handle)
-            VerticalDivider()
+            // Draggable Divider
+            Box(
+                modifier = Modifier
+                    .width(10.dp)
+                    .fillMaxHeight()
+                    .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                    .draggable(
+                        orientation = Orientation.Horizontal,
+                        state = rememberDraggableState { delta ->
+                            val newFraction = splitFraction + delta / totalWidthPx.coerceAtLeast(1f)
+                            splitFraction = newFraction.coerceIn(0.02f, 0.98f)
+                        }
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                // Visual grip indicator (vertical bar)
+                Box(
+                    modifier = Modifier
+                        .width(4.dp)
+                        .height(40.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f))
+                )
+            }
 
             // Detail Pane
             Box(

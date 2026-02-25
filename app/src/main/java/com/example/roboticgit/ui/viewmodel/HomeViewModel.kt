@@ -96,11 +96,23 @@ class HomeViewModel(
         viewModelScope.launch {
             _uiState.value = HomeUiState.Loading
             try {
-                val repoList = gitManager.listRepositories()
+                // Also load manually tracked repositories
+                val trackedPaths = authManager.getTrackedRepoPaths()
+                val repoList = gitManager.listRepositories(trackedPaths)
                 _repos.value = repoList
                 _uiState.value = HomeUiState.Success(repoList)
             } catch (e: Exception) {
                 _uiState.value = HomeUiState.Error(e.message ?: "Unknown error")
+            }
+        }
+    }
+
+    fun addExistingRepository(path: String) {
+        viewModelScope.launch {
+            val file = File(path)
+            if (file.exists() && file.isDirectory && File(file, ".git").exists()) {
+                authManager.addTrackedRepoPath(file.absolutePath)
+                loadRepositories()
             }
         }
     }
@@ -163,12 +175,27 @@ class HomeViewModel(
             try {
                 val reposToDelete = _repos.value.filter { repoNames.contains(it.name) }
                 reposToDelete.forEach { repo ->
+                    // Remove from tracked paths first
+                    authManager.removeTrackedRepoPath(repo.localPath.absolutePath)
+                    // Then delete the actual directory
                     repo.localPath.deleteRecursively()
                 }
                 loadRepositories()
                 clearSelection()
             } catch (e: Exception) {
             }
+        }
+    }
+
+    fun untrackSelectedRepositories() {
+        val repoNames = _selectedRepos.value
+        viewModelScope.launch {
+            val reposToUntrack = _repos.value.filter { repoNames.contains(it.name) }
+            reposToUntrack.forEach { repo ->
+                authManager.removeTrackedRepoPath(repo.localPath.absolutePath)
+            }
+            loadRepositories()
+            clearSelection()
         }
     }
 
@@ -215,6 +242,10 @@ class HomeViewModel(
             }
 
             if (result.isSuccess) {
+                // Save the cloned repo path to tracked paths
+                result.getOrNull()?.let {
+                    authManager.addTrackedRepoPath(it.localPath.absolutePath)
+                }
                 loadRepositories()
             } else {
                 _repos.update { current -> current.filterNot { it.name == name && it.isCloning } }

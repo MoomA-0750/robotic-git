@@ -16,6 +16,9 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -33,6 +36,7 @@ import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLayoutResult
@@ -95,9 +99,6 @@ fun RepoDetailScreen(
 
     var editingPath by rememberSaveable { mutableStateOf<String?>(null) }
     var editingText by rememberSaveable { mutableStateOf("") }
-
-    var selectedCommit by remember { mutableStateOf<RevCommit?>(null) }
-    var commitChanges by remember { mutableStateOf<List<CommitChange>>(emptyList()) }
 
     var showCreateBranchDialog by remember { mutableStateOf(false) }
     var branchToDelete by remember { mutableStateOf<BranchInfo?>(null) }
@@ -264,12 +265,7 @@ fun RepoDetailScreen(
                                 2 -> HistoryView(
                                     commits = state.commits,
                                     getGravatarUrl = viewModel::getGravatarUrl,
-                                    onCommitClick = { commit ->
-                                        selectedCommit = commit
-                                        scope.launch {
-                                            commitChanges = viewModel.getCommitChanges(commit)
-                                        }
-                                    }
+                                    viewModel = viewModel
                                 )
                                 3 -> BranchesView(
                                     branches = state.branches,
@@ -369,23 +365,7 @@ fun RepoDetailScreen(
             )
         }
 
-        selectedCommit?.let { commit ->
-            CommitDetailDialog(
-                commit = commit,
-                changes = commitChanges,
-                getGravatarUrl = viewModel::getGravatarUrl,
-                onFileClick = { path ->
-                    diffFile = path
-                    scope.launch {
-                        diffText = viewModel.getCommitFileDiff(commit, path)
-                    }
-                },
-                onDismiss = {
-                    selectedCommit = null
-                    commitChanges = emptyList()
-                }
-            )
-        }
+        // CommitDetailDialog removed - now handled inline in HistoryView split-screen
 
         // Merge dialog
         if (showMergeDialog && uiState is RepoDetailUiState.Success) {
@@ -1219,13 +1199,533 @@ class WhitespaceVisualTransformation(
 fun HistoryView(
     commits: List<RevCommit>,
     getGravatarUrl: (String) -> String,
-    onCommitClick: (RevCommit) -> Unit
+    viewModel: RepoDetailViewModel
 ) {
-    LazyColumn(modifier = Modifier.fillMaxSize()) {
-        items(commits) { commit ->
-            CommitItem(commit, getGravatarUrl, onClick = { onCommitClick(commit) })
-            HorizontalDivider()
+    var selectedCommit by remember { mutableStateOf<RevCommit?>(null) }
+    var commitChanges by remember { mutableStateOf<List<CommitChange>>(emptyList()) }
+    var isLoadingChanges by remember { mutableStateOf(false) }
+    var selectedFileDiff by remember { mutableStateOf<String?>(null) }
+    var selectedFilePath by remember { mutableStateOf<String?>(null) }
+    var isLoadingDiff by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+
+    // Draggable split ratio: fraction of total height for top pane
+    var splitFraction by remember { mutableFloatStateOf(0.4f) }
+
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val totalHeightPx = with(LocalDensity.current) { maxHeight.toPx() }
+
+        Column(modifier = Modifier.fillMaxSize()) {
+            // === Top: Commit list ===
+            LazyColumn(
+                modifier = Modifier
+                    .weight(if (selectedCommit != null) splitFraction else 1f)
+                    .fillMaxWidth()
+            ) {
+                items(commits) { commit ->
+                    val isSelected = selectedCommit?.name == commit.name
+                    CommitItem(
+                        commit = commit,
+                        getGravatarUrl = getGravatarUrl,
+                        isSelected = isSelected,
+                        onClick = {
+                            if (isSelected) {
+                                selectedCommit = null
+                                commitChanges = emptyList()
+                                selectedFileDiff = null
+                                selectedFilePath = null
+                            } else {
+                                selectedCommit = commit
+                                selectedFileDiff = null
+                                selectedFilePath = null
+                                isLoadingChanges = true
+                                scope.launch {
+                                    commitChanges = viewModel.getCommitChanges(commit)
+                                    isLoadingChanges = false
+                                }
+                            }
+                        }
+                    )
+                    HorizontalDivider()
+                }
+            }
+
+            // === Draggable divider + Bottom detail panel ===
+            selectedCommit?.let { commit ->
+                // --- Draggable divider handle ---
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(14.dp)
+                        .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                        .draggable(
+                            orientation = Orientation.Vertical,
+                            state = rememberDraggableState { delta ->
+                                val newFraction = splitFraction + delta / totalHeightPx.coerceAtLeast(1f)
+                                splitFraction = newFraction.coerceIn(0.02f, 0.98f)
+                            }
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
+                    // Visual grip indicator
+                    Box(
+                        modifier = Modifier
+                            .width(40.dp)
+                            .height(4.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f))
+                    )
+                }
+
+                // --- Bottom detail panel ---
+                Column(
+                    modifier = Modifier
+                        .weight(1f - splitFraction)
+                        .fillMaxWidth()
+                        .background(MaterialTheme.colorScheme.surfaceContainerLow)
+                ) {
+                    // Header bar with close button
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            AsyncImage(
+                                model = getGravatarUrl(commit.authorIdent.emailAddress),
+                                contentDescription = null,
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .clip(CircleShape)
+                            )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = commit.shortMessage,
+                                    style = MaterialTheme.typography.titleSmall,
+                                    maxLines = 1,
+                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = "${commit.authorIdent.name} · ${Date(commit.commitTime * 1000L)}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            IconButton(onClick = {
+                                selectedCommit = null
+                                commitChanges = emptyList()
+                                selectedFileDiff = null
+                                selectedFilePath = null
+                            }) {
+                                Icon(
+                                    Icons.Default.Close,
+                                    contentDescription = "Close detail panel",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+
+                    // Scrollable content area
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(horizontal = 12.dp),
+                        contentPadding = PaddingValues(vertical = 8.dp)
+                    ) {
+                        // Commit hash
+                        item {
+                            Surface(
+                                shape = MaterialTheme.shapes.small,
+                                color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "Hash:",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.outline
+                                    )
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(
+                                        text = commit.name,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontFamily = FontFamily.Monospace,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        maxLines = 1,
+                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                        }
+
+                        // Full commit message (if different from short message)
+                        if (commit.fullMessage.trim() != commit.shortMessage.trim()) {
+                            item {
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text(
+                                    text = commit.fullMessage,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(horizontal = 4.dp)
+                                )
+                            }
+                        }
+
+                        // Changed files section header
+                        item {
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.padding(horizontal = 4.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.Description,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(Modifier.width(6.dp))
+                                Text(
+                                    text = if (isLoadingChanges) "Loading changes…"
+                                           else "Changed Files (${commitChanges.size})",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(4.dp))
+                        }
+
+                        if (isLoadingChanges) {
+                            item {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(16.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                                }
+                            }
+                        } else {
+                            // Render directory tree
+                            item {
+                                val fileTree = remember(commitChanges) {
+                                    buildFileTree(commitChanges)
+                                }
+                                FileTreeView(
+                                    nodes = fileTree,
+                                    selectedFilePath = selectedFilePath,
+                                    selectedFileDiff = selectedFileDiff,
+                                    isLoadingDiff = isLoadingDiff,
+                                    onFileClick = { path ->
+                                        if (selectedFilePath == path) {
+                                            selectedFilePath = null
+                                            selectedFileDiff = null
+                                        } else {
+                                            selectedFilePath = path
+                                            selectedFileDiff = null
+                                            isLoadingDiff = true
+                                            scope.launch {
+                                                selectedFileDiff = viewModel.getCommitFileDiff(commit, path)
+                                                isLoadingDiff = false
+                                            }
+                                        }
+                                    },
+                                    depth = 0
+                                )
+                            }
+                        }
+
+                        // Bottom padding
+                        item {
+                            Spacer(modifier = Modifier.height(16.dp))
+                        }
+                    }
+                }
+            }
         }
+    }
+}
+
+// ========== File Tree Data Structures ==========
+
+private data class FileTreeNode(
+    val name: String,
+    val fullPath: String,
+    val isDirectory: Boolean,
+    val changeType: String? = null,
+    val children: MutableList<FileTreeNode> = mutableListOf()
+)
+
+private fun buildFileTree(changes: List<CommitChange>): List<FileTreeNode> {
+    val root = mutableListOf<FileTreeNode>()
+    for (change in changes) {
+        val parts = change.path.split("/")
+        var currentChildren = root
+        for (i in parts.indices) {
+            val part = parts[i]
+            val isFile = i == parts.lastIndex
+            val fullPath = parts.take(i + 1).joinToString("/")
+            val existing = currentChildren.find { it.name == part }
+            if (existing != null) {
+                currentChildren = existing.children
+            } else {
+                val node = FileTreeNode(
+                    name = part,
+                    fullPath = fullPath,
+                    isDirectory = !isFile,
+                    changeType = if (isFile) change.changeType else null
+                )
+                currentChildren.add(node)
+                currentChildren = node.children
+            }
+        }
+    }
+    fun sortNodes(nodes: MutableList<FileTreeNode>) {
+        nodes.sortWith(compareBy<FileTreeNode> { !it.isDirectory }.thenBy { it.name })
+        nodes.forEach { if (it.isDirectory) sortNodes(it.children) }
+    }
+    sortNodes(root)
+    return root
+}
+
+// ========== File Tree Composables ==========
+
+@Composable
+private fun FileTreeView(
+    nodes: List<FileTreeNode>,
+    selectedFilePath: String?,
+    selectedFileDiff: String?,
+    isLoadingDiff: Boolean,
+    onFileClick: (String) -> Unit,
+    depth: Int
+) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        nodes.forEach { node ->
+            if (node.isDirectory) {
+                DirectoryTreeNode(
+                    node = node,
+                    selectedFilePath = selectedFilePath,
+                    selectedFileDiff = selectedFileDiff,
+                    isLoadingDiff = isLoadingDiff,
+                    onFileClick = onFileClick,
+                    depth = depth
+                )
+            } else {
+                FileTreeLeaf(
+                    node = node,
+                    isSelected = selectedFilePath == node.fullPath,
+                    selectedFileDiff = selectedFileDiff,
+                    isLoadingDiff = isLoadingDiff,
+                    onFileClick = onFileClick,
+                    depth = depth
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun DirectoryTreeNode(
+    node: FileTreeNode,
+    selectedFilePath: String?,
+    selectedFileDiff: String?,
+    isLoadingDiff: Boolean,
+    onFileClick: (String) -> Unit,
+    depth: Int
+) {
+    var isExpanded by remember { mutableStateOf(true) }
+    val fileCount = remember(node) {
+        fun count(n: FileTreeNode): Int =
+            if (n.isDirectory) n.children.sumOf { count(it) } else 1
+        count(node)
+    }
+
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Surface(
+            color = Color.Transparent,
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { isExpanded = !isExpanded }
+        ) {
+            Row(
+                modifier = Modifier.padding(
+                    start = (depth * 16 + 4).dp, end = 8.dp,
+                    top = 4.dp, bottom = 4.dp
+                ),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = if (isExpanded) Icons.Default.ExpandMore else Icons.Default.ChevronRight,
+                    contentDescription = if (isExpanded) "Collapse" else "Expand",
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(Modifier.width(4.dp))
+                Icon(
+                    imageVector = if (isExpanded) Icons.Default.FolderOpen else Icons.Default.Folder,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f),
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    text = node.name,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = FontWeight.Medium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.weight(1f)
+                )
+                Surface(
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    modifier = Modifier.padding(start = 4.dp)
+                ) {
+                    Text(
+                        text = "$fileCount",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp)
+                    )
+                }
+            }
+        }
+
+        AnimatedVisibility(visible = isExpanded) {
+            FileTreeView(
+                nodes = node.children,
+                selectedFilePath = selectedFilePath,
+                selectedFileDiff = selectedFileDiff,
+                isLoadingDiff = isLoadingDiff,
+                onFileClick = onFileClick,
+                depth = depth + 1
+            )
+        }
+    }
+}
+
+@Composable
+private fun FileTreeLeaf(
+    node: FileTreeNode,
+    isSelected: Boolean,
+    selectedFileDiff: String?,
+    isLoadingDiff: Boolean,
+    onFileClick: (String) -> Unit,
+    depth: Int
+) {
+    val changeColor = when (node.changeType) {
+        "ADD" -> Color(0xFF4CAF50)
+        "DELETE" -> Color(0xFFF44336)
+        "MODIFY" -> Color(0xFFFF9800)
+        "RENAME" -> Color(0xFF2196F3)
+        "COPY" -> Color(0xFF9C27B0)
+        else -> MaterialTheme.colorScheme.onSurface
+    }
+    val changeLabel = when (node.changeType) {
+        "ADD" -> "A"
+        "DELETE" -> "D"
+        "MODIFY" -> "M"
+        "RENAME" -> "R"
+        "COPY" -> "C"
+        else -> "?"
+    }
+
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Surface(
+            shape = MaterialTheme.shapes.small,
+            color = if (isSelected)
+                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
+            else Color.Transparent,
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { onFileClick(node.fullPath) }
+        ) {
+            Row(
+                modifier = Modifier.padding(
+                    start = (depth * 16 + 8).dp, end = 8.dp,
+                    top = 6.dp, bottom = 6.dp
+                ),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Surface(
+                    shape = MaterialTheme.shapes.extraSmall,
+                    color = changeColor.copy(alpha = 0.15f),
+                    modifier = Modifier.size(20.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Text(
+                            text = changeLabel,
+                            color = changeColor,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+                Spacer(Modifier.width(6.dp))
+                Icon(
+                    imageVector = Icons.Default.InsertDriveFile,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                    modifier = Modifier.size(14.dp)
+                )
+                Spacer(Modifier.width(4.dp))
+                Text(
+                    text = node.name,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace,
+                    color = changeColor,
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                Icon(
+                    imageVector = if (isSelected) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                    contentDescription = if (isSelected) "Collapse diff" else "Expand diff",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(16.dp)
+                )
+            }
+        }
+
+        AnimatedVisibility(visible = isSelected) {
+            Surface(
+                shape = MaterialTheme.shapes.small,
+                color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = (depth * 16 + 8).dp, end = 8.dp, bottom = 4.dp)
+            ) {
+                if (isLoadingDiff) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CircularProgressIndicator(modifier = Modifier.size(20.dp))
+                    }
+                } else {
+                    SideBySideDiffView(
+                        diffText = selectedFileDiff ?: "",
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            }
+        }
+
+        HorizontalDivider(
+            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.2f),
+            modifier = Modifier.padding(start = (depth * 16).dp)
+        )
     }
 }
 
@@ -1233,13 +1733,14 @@ fun HistoryView(
 fun CommitItem(
     commit: RevCommit,
     getGravatarUrl: (String) -> String,
+    isSelected: Boolean = false,
     onClick: () -> Unit
 ) {
     val email = commit.authorIdent.emailAddress
     ListItem(
-        headlineContent = { Text(commit.shortMessage) },
-        supportingContent = { 
-            Text("${commit.authorIdent.name} - ${Date(commit.commitTime * 1000L)}") 
+        headlineContent = { Text(commit.shortMessage, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis) },
+        supportingContent = {
+            Text("${commit.authorIdent.name} · ${Date(commit.commitTime * 1000L)}")
         },
         leadingContent = {
             AsyncImage(
@@ -1250,55 +1751,523 @@ fun CommitItem(
                     .clip(CircleShape)
             )
         },
-        modifier = Modifier.clickable { onClick() }
+        modifier = Modifier
+            .clickable { onClick() }
+            .then(
+                if (isSelected) Modifier.background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f))
+                else Modifier
+            ),
+        trailingContent = {
+            Text(
+                text = commit.name.take(7),
+                style = MaterialTheme.typography.labelSmall,
+                fontFamily = FontFamily.Monospace,
+                color = MaterialTheme.colorScheme.outline
+            )
+        }
     )
 }
 
-@Composable
-fun CommitDetailDialog(
-    commit: RevCommit,
-    changes: List<CommitChange>,
-    getGravatarUrl: (String) -> String,
-    onFileClick: (String) -> Unit,
-    onDismiss: () -> Unit
-) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Commit Details") },
-        text = {
-            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    AsyncImage(
-                        model = getGravatarUrl(commit.authorIdent.emailAddress),
-                        contentDescription = null,
-                        modifier = Modifier.size(48.dp).clip(CircleShape)
-                    )
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Column {
-                        Text(commit.authorIdent.name, style = MaterialTheme.typography.titleMedium)
-                        Text(Date(commit.commitTime * 1000L).toString(), style = MaterialTheme.typography.bodySmall)
-                    }
-                }
-                Spacer(modifier = Modifier.height(16.dp))
-                Text("Hash: ${commit.name}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
-                Spacer(modifier = Modifier.height(8.dp))
-                Text(commit.fullMessage, style = MaterialTheme.typography.bodyMedium)
-                
-                Spacer(modifier = Modifier.height(16.dp))
-                Text("Changes", style = MaterialTheme.typography.titleSmall)
-                changes.forEach { change ->
-                    ListItem(
-                        headlineContent = { Text(change.path, fontSize = 14.sp) },
-                        supportingContent = { Text(change.changeType, style = MaterialTheme.typography.bodySmall) },
-                        modifier = Modifier.clickable { onFileClick(change.path) }
+// ========== Side-by-side Diff View (VS Code-style) ==========
+
+/**
+ * Represents a single line in the diff view
+ */
+private enum class DiffLineType {
+    CONTEXT, ADDED, REMOVED, HUNK_HEADER, FILE_HEADER
+}
+
+private data class DiffLine(
+    val type: DiffLineType,
+    val content: String,
+    val oldLineNumber: Int? = null,   // line number in old file
+    val newLineNumber: Int? = null    // line number in new file
+)
+
+/**
+ * A pair of lines for side-by-side view: left (old), right (new)
+ */
+private data class SideBySideLine(
+    val left: DiffLine?,
+    val right: DiffLine?,
+    val isHunkHeader: Boolean = false,
+    val hunkText: String = ""
+)
+
+/**
+ * Parses unified diff text into a list of SideBySideLines for rendering
+ */
+private fun parseSideBySideDiff(diffText: String): List<SideBySideLine> {
+    val lines = diffText.split("\n")
+    val result = mutableListOf<SideBySideLine>()
+
+    var oldLine = 0
+    var newLine = 0
+    val removedBuffer = mutableListOf<DiffLine>()
+    val addedBuffer = mutableListOf<DiffLine>()
+
+    fun flushBuffers() {
+        val maxLen = maxOf(removedBuffer.size, addedBuffer.size)
+        for (i in 0 until maxLen) {
+            result.add(
+                SideBySideLine(
+                    left = removedBuffer.getOrNull(i),
+                    right = addedBuffer.getOrNull(i)
+                )
+            )
+        }
+        removedBuffer.clear()
+        addedBuffer.clear()
+    }
+
+    for (line in lines) {
+        when {
+            // File headers (diff --git, index, ---, +++)
+            line.startsWith("diff ") || line.startsWith("index ") ||
+            line.startsWith("--- ") || line.startsWith("+++ ") -> {
+                flushBuffers()
+                // Skip file-level headers, we already show the file name
+            }
+            // Hunk header: @@ -oldStart,oldCount +newStart,newCount @@
+            line.startsWith("@@") -> {
+                flushBuffers()
+                // Parse line numbers from hunk header
+                val regex = Regex("""@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)""")
+                val match = regex.find(line)
+                if (match != null) {
+                    oldLine = match.groupValues[1].toIntOrNull() ?: 0
+                    newLine = match.groupValues[2].toIntOrNull() ?: 0
+                    val context = match.groupValues[3].trim()
+                    result.add(
+                        SideBySideLine(
+                            left = null,
+                            right = null,
+                            isHunkHeader = true,
+                            hunkText = if (context.isNotEmpty()) "@@ $context" else line
+                        )
                     )
                 }
             }
-        },
-        confirmButton = {
-            TextButton(onClick = onDismiss) { Text("Close") }
+            // Removed line
+            line.startsWith("-") -> {
+                removedBuffer.add(DiffLine(
+                    type = DiffLineType.REMOVED,
+                    content = line.substring(1),
+                    oldLineNumber = oldLine
+                ))
+                oldLine++
+            }
+            // Added line
+            line.startsWith("+") -> {
+                addedBuffer.add(DiffLine(
+                    type = DiffLineType.ADDED,
+                    content = line.substring(1),
+                    newLineNumber = newLine
+                ))
+                newLine++
+            }
+            // Context line (unchanged)
+            else -> {
+                flushBuffers()
+                val content = if (line.startsWith(" ")) line.substring(1) else line
+                if (line.isNotEmpty() || (oldLine > 0 && newLine > 0)) {
+                    result.add(
+                        SideBySideLine(
+                            left = DiffLine(
+                                type = DiffLineType.CONTEXT,
+                                content = content,
+                                oldLineNumber = oldLine
+                            ),
+                            right = DiffLine(
+                                type = DiffLineType.CONTEXT,
+                                content = content,
+                                newLineNumber = newLine
+                            )
+                        )
+                    )
+                    oldLine++
+                    newLine++
+                }
+            }
         }
-    )
+    }
+    flushBuffers()
+    return result
+}
+
+@Composable
+fun SideBySideDiffView(
+    diffText: String,
+    modifier: Modifier = Modifier
+) {
+    val extendedColors = MaterialTheme.extendedColors
+    val parsedLines = remember(diffText) { parseSideBySideDiff(diffText) }
+
+    if (parsedLines.isEmpty()) {
+        Box(
+            modifier = modifier.padding(16.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = "No changes",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.outline
+            )
+        }
+        return
+    }
+
+    // Find max line number for gutter width calculation
+    val maxLineNum = remember(parsedLines) {
+        var maxOld = 0
+        var maxNew = 0
+        parsedLines.forEach { line ->
+            line.left?.oldLineNumber?.let { if (it > maxOld) maxOld = it }
+            line.right?.newLineNumber?.let { if (it > maxNew) maxNew = it }
+        }
+        maxOf(maxOld, maxNew)
+    }
+    val gutterWidth = remember(maxLineNum) {
+        (maxLineNum.toString().length * 8 + 12).coerceAtLeast(32)
+    }
+
+    val gutterBg = MaterialTheme.colorScheme.surfaceContainerHigh
+    val gutterTextColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+    val separatorColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
+    val hunkBg = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
+    val hunkTextColor = MaterialTheme.colorScheme.primary
+
+    BoxWithConstraints(modifier = modifier) {
+        val isSideBySide = maxWidth >= 600.dp
+
+        if (isSideBySide) {
+            // === Side-by-side mode ===
+            // Use IntrinsicSize.Min on the parent Row so the center divider
+            // can use fillMaxHeight() correctly
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(IntrinsicSize.Min)
+            ) {
+                val leftScrollState = rememberScrollState()
+                val rightScrollState = rememberScrollState()
+
+                // Left pane (old file) — no verticalScroll (parent LazyColumn handles it)
+                Column(
+                    modifier = Modifier.weight(1f)
+                ) {
+                    // Header
+                    Surface(
+                        color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.3f),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = "  ← Original",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                        )
+                    }
+
+                    parsedLines.forEach { sideBySideLine ->
+                        if (sideBySideLine.isHunkHeader) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(hunkBg)
+                                    .padding(horizontal = 4.dp, vertical = 2.dp)
+                            ) {
+                                Text(
+                                    text = sideBySideLine.hunkText,
+                                    fontSize = 10.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    color = hunkTextColor,
+                                    maxLines = 1
+                                )
+                            }
+                        } else {
+                            val leftLine = sideBySideLine.left
+                            val bgColor = when (leftLine?.type) {
+                                DiffLineType.REMOVED -> extendedColors.diffRemovedBackground
+                                else -> Color.Transparent
+                            }
+                            val textColor = when (leftLine?.type) {
+                                DiffLineType.REMOVED -> extendedColors.diffRemovedText
+                                else -> MaterialTheme.colorScheme.onSurfaceVariant
+                            }
+
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(bgColor)
+                                    .horizontalScroll(leftScrollState),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                // Line number gutter
+                                Box(
+                                    modifier = Modifier
+                                        .width(gutterWidth.dp)
+                                        .background(gutterBg),
+                                    contentAlignment = Alignment.CenterEnd
+                                ) {
+                                    Text(
+                                        text = leftLine?.oldLineNumber?.toString() ?: "",
+                                        fontSize = 10.sp,
+                                        fontFamily = FontFamily.Monospace,
+                                        color = gutterTextColor,
+                                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                    )
+                                }
+                                // Content
+                                Text(
+                                    text = leftLine?.content ?: "",
+                                    color = if (leftLine != null) textColor else Color.Transparent,
+                                    fontSize = 11.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    modifier = Modifier
+                                        .padding(horizontal = 4.dp, vertical = 1.dp),
+                                    softWrap = false,
+                                    maxLines = 1
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Center divider — works because parent Row has height(IntrinsicSize.Min)
+                Spacer(
+                    modifier = Modifier
+                        .width(2.dp)
+                        .fillMaxHeight()
+                        .background(separatorColor)
+                )
+
+                // Right pane (new file) — no verticalScroll
+                Column(
+                    modifier = Modifier.weight(1f)
+                ) {
+                    // Header
+                    Surface(
+                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = "  → Modified",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                        )
+                    }
+
+                    parsedLines.forEach { sideBySideLine ->
+                        if (sideBySideLine.isHunkHeader) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(hunkBg)
+                                    .padding(horizontal = 4.dp, vertical = 2.dp)
+                            ) {
+                                Text(
+                                    text = sideBySideLine.hunkText,
+                                    fontSize = 10.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    color = hunkTextColor,
+                                    maxLines = 1
+                                )
+                            }
+                        } else {
+                            val rightLine = sideBySideLine.right
+                            val bgColor = when (rightLine?.type) {
+                                DiffLineType.ADDED -> extendedColors.diffAddedBackground
+                                else -> Color.Transparent
+                            }
+                            val textColor = when (rightLine?.type) {
+                                DiffLineType.ADDED -> extendedColors.diffAddedText
+                                else -> MaterialTheme.colorScheme.onSurfaceVariant
+                            }
+
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(bgColor)
+                                    .horizontalScroll(rightScrollState),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .width(gutterWidth.dp)
+                                        .background(gutterBg),
+                                    contentAlignment = Alignment.CenterEnd
+                                ) {
+                                    Text(
+                                        text = rightLine?.newLineNumber?.toString() ?: "",
+                                        fontSize = 10.sp,
+                                        fontFamily = FontFamily.Monospace,
+                                        color = gutterTextColor,
+                                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                    )
+                                }
+                                Text(
+                                    text = rightLine?.content ?: "",
+                                    color = if (rightLine != null) textColor else Color.Transparent,
+                                    fontSize = 11.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    modifier = Modifier
+                                        .padding(horizontal = 4.dp, vertical = 1.dp),
+                                    softWrap = false,
+                                    maxLines = 1
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            // === Unified mode (narrow screen) with line numbers ===
+            // No verticalScroll — parent LazyColumn handles scrolling
+            Column(modifier = Modifier.fillMaxWidth()) {
+                parsedLines.forEach { sideBySideLine ->
+                    if (sideBySideLine.isHunkHeader) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(hunkBg)
+                                .padding(horizontal = 4.dp, vertical = 2.dp)
+                        ) {
+                            Text(
+                                text = sideBySideLine.hunkText,
+                                fontSize = 10.sp,
+                                fontFamily = FontFamily.Monospace,
+                                color = hunkTextColor,
+                                maxLines = 1
+                            )
+                        }
+                    } else {
+                        // Show removed lines
+                        sideBySideLine.left?.let { leftLine ->
+                            if (leftLine.type == DiffLineType.REMOVED) {
+                                UnifiedDiffLineRow(
+                                    oldLineNum = leftLine.oldLineNumber,
+                                    newLineNum = null,
+                                    content = leftLine.content,
+                                    prefix = "-",
+                                    bgColor = extendedColors.diffRemovedBackground,
+                                    textColor = extendedColors.diffRemovedText,
+                                    gutterBg = gutterBg,
+                                    gutterTextColor = gutterTextColor,
+                                    gutterWidth = gutterWidth
+                                )
+                            }
+                        }
+                        // Show added lines
+                        sideBySideLine.right?.let { rightLine ->
+                            if (rightLine.type == DiffLineType.ADDED) {
+                                UnifiedDiffLineRow(
+                                    oldLineNum = null,
+                                    newLineNum = rightLine.newLineNumber,
+                                    content = rightLine.content,
+                                    prefix = "+",
+                                    bgColor = extendedColors.diffAddedBackground,
+                                    textColor = extendedColors.diffAddedText,
+                                    gutterBg = gutterBg,
+                                    gutterTextColor = gutterTextColor,
+                                    gutterWidth = gutterWidth
+                                )
+                            }
+                        }
+                        // Context lines (shown once)
+                        if (sideBySideLine.left?.type == DiffLineType.CONTEXT) {
+                            val ctxLine = sideBySideLine.left
+                            UnifiedDiffLineRow(
+                                oldLineNum = ctxLine.oldLineNumber,
+                                newLineNum = sideBySideLine.right?.newLineNumber,
+                                content = ctxLine.content,
+                                prefix = " ",
+                                bgColor = Color.Transparent,
+                                textColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                gutterBg = gutterBg,
+                                gutterTextColor = gutterTextColor,
+                                gutterWidth = gutterWidth
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun UnifiedDiffLineRow(
+    oldLineNum: Int?,
+    newLineNum: Int?,
+    content: String,
+    prefix: String,
+    bgColor: Color,
+    textColor: Color,
+    gutterBg: Color,
+    gutterTextColor: Color,
+    gutterWidth: Int
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(bgColor)
+            .horizontalScroll(rememberScrollState()),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        // Old line number gutter
+        Box(
+            modifier = Modifier
+                .width(gutterWidth.dp)
+                .background(gutterBg),
+            contentAlignment = Alignment.CenterEnd
+        ) {
+            Text(
+                text = oldLineNum?.toString() ?: "",
+                fontSize = 10.sp,
+                fontFamily = FontFamily.Monospace,
+                color = gutterTextColor,
+                modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+            )
+        }
+        // New line number gutter
+        Box(
+            modifier = Modifier
+                .width(gutterWidth.dp)
+                .background(gutterBg),
+            contentAlignment = Alignment.CenterEnd
+        ) {
+            Text(
+                text = newLineNum?.toString() ?: "",
+                fontSize = 10.sp,
+                fontFamily = FontFamily.Monospace,
+                color = gutterTextColor,
+                modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+            )
+        }
+        // Prefix indicator (+, -, space)
+        Text(
+            text = prefix,
+            fontSize = 11.sp,
+            fontFamily = FontFamily.Monospace,
+            color = textColor,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(horizontal = 2.dp, vertical = 1.dp)
+        )
+        // Content
+        Text(
+            text = content,
+            color = textColor,
+            fontSize = 11.sp,
+            fontFamily = FontFamily.Monospace,
+            modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
+            softWrap = false,
+            maxLines = 1
+        )
+    }
 }
 
 // ========== Merge UI Components ==========
