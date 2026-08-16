@@ -39,6 +39,7 @@ import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
@@ -806,6 +807,9 @@ fun FloatingCommitToolbar(
     }
 }
 
+/** Test handle for the staging checkbox of [path]. */
+fun stageCheckboxTag(path: String): String = "stage-checkbox:$path"
+
 @Composable
 fun FileStatusItem(
     fileStatus: FileStatus,
@@ -858,7 +862,12 @@ fun FileStatusItem(
             } else {
                 Checkbox(
                     checked = fileStatus.isStaged,
-                    onCheckedChange = { onToggleStage() }
+                    onCheckedChange = { onToggleStage() },
+                    // A stable handle for the UI tests. The row's own text is not
+                    // uniquely addressable -- the list item merges it with the
+                    // state label -- and staging the wrong file is precisely what
+                    // those tests exist to catch.
+                    modifier = Modifier.testTag(stageCheckboxTag(fileStatus.path))
                 )
             }
         },
