@@ -5,9 +5,13 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.example.roboticgit.data.AuthManager
 import com.example.roboticgit.data.CommitChange
+import com.example.roboticgit.data.GitError
 import com.example.roboticgit.data.GitManager
+import com.example.roboticgit.data.RemoteHost
+import com.example.roboticgit.data.forRemote
 import com.example.roboticgit.data.PushOutcome
 import com.example.roboticgit.data.RepoFile
+import com.example.roboticgit.data.model.Account
 import com.example.roboticgit.data.model.BranchInfo
 import com.example.roboticgit.data.model.ConflictFile
 import com.example.roboticgit.data.model.CommitSummary
@@ -174,9 +178,28 @@ class RepoDetailViewModel(
         }
     }
 
+    /**
+     * The stored account for this repository's remote.
+     *
+     * Credentials used to be taken from whichever account was first in the list,
+     * so a Gitea repository was pushed with a GitHub token. Matching on the
+     * remote's host sends each token only to the host it was issued for.
+     */
+    private fun accountForRemote(): Account? {
+        val remote = _remotes.value.firstOrNull { it.name == "origin" } ?: _remotes.value.firstOrNull()
+        return authManager.getAccounts().forRemote(remote?.pushUrl)
+    }
+
+    /** Names the host when nothing is stored for it, so the user knows what to add. */
+    private fun missingAccountHint(): String? {
+        val remote = _remotes.value.firstOrNull { it.name == "origin" } ?: _remotes.value.firstOrNull()
+        val host = RemoteHost.of(remote?.pushUrl) ?: return null
+        return "No account is stored for $host. Add one in Settings › Accounts."
+    }
+
     fun push() {
         viewModelScope.launch {
-            val token = authManager.getAccounts().firstOrNull()?.token
+            val token = accountForRemote()?.token
             gitManager.push(repo, token)
                 .onSuccess { outcome ->
                     _statusMessage.value = when (outcome) {
@@ -186,19 +209,19 @@ class RepoDetailViewModel(
                     }
                     loadData()
                 }
-                .onFailure { _errorMessage.value = "Push failed: ${it.message}" }
+                .onFailure { _errorMessage.value = describeAuthAwareFailure("Push failed", it) }
         }
     }
 
     fun pull() {
         viewModelScope.launch {
-            val token = authManager.getAccounts().firstOrNull()?.token
+            val token = accountForRemote()?.token
             gitManager.pull(repo, token)
                 .onSuccess {
                     _statusMessage.value = "Pull complete"
                     loadData()
                 }
-                .onFailure { _errorMessage.value = "Pull failed: ${it.message}" }
+                .onFailure { _errorMessage.value = describeAuthAwareFailure("Pull failed", it) }
         }
     }
 
@@ -238,6 +261,18 @@ class RepoDetailViewModel(
                 _errorMessage.value = result.exceptionOrNull()?.message
             }
         }
+    }
+
+    /**
+     * Adds the missing-account hint when a network operation failed on
+     * authentication, since "check your token" is not actionable if the user
+     * never had an account for that host to begin with.
+     */
+    private fun describeAuthAwareFailure(prefix: String, error: Throwable): String {
+        val base = "$prefix: ${error.message}"
+        if (error !is GitError.AuthenticationFailed) return base
+        val hint = missingAccountHint()?.takeIf { accountForRemote() == null } ?: return base
+        return "$base\n\n$hint"
     }
 
     fun clearError() {
