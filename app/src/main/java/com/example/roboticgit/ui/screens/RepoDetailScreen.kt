@@ -84,8 +84,13 @@ fun RepoDetailScreen(
     val context = LocalContext.current
     val authManager = remember { AuthManager(context) }
     val rootDir = remember { File(authManager.getDefaultCloneDir()) }
+    // EncryptedSharedPreferences read; must not happen on every recomposition.
+    val editorFontSize = remember { authManager.getEditorFontSize().toFloat() }
 
+    // key = repoName so switching repos in the two-pane layout gets a fresh
+    // ViewModel instead of reusing the one bound to the first repo opened.
     val viewModel: RepoDetailViewModel = viewModel(
+        key = repoName,
         factory = RepoDetailViewModelFactory(authManager, rootDir, repoName)
     )
     val uiState by viewModel.uiState.collectAsState()
@@ -361,7 +366,7 @@ fun RepoDetailScreen(
                     editingPath = null
                 },
                 onDismiss = { editingPath = null },
-                fontSize = authManager.getEditorFontSize().toFloat()
+                fontSize = editorFontSize
             )
         }
 
