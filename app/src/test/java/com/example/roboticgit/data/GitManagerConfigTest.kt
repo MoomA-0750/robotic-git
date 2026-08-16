@@ -48,22 +48,72 @@ class GitManagerConfigTest {
         return config.getString("core", null, "fileMode")
     }
 
-    private fun filesystemSupportsExecute(): Boolean = git.repository.fs.supportsExecute()
+    /**
+     * Probed independently of the production code, so the test asserts against
+     * the filesystem rather than against the implementation's own answer.
+     */
+    private fun filesystemStoresExecutableBit(): Boolean {
+        val probe = tmp.newFile("probe-${probeCounter++}")
+        return probe.setExecutable(true, true) && probe.canExecute()
+    }
+
+    private var probeCounter = 0
 
     @Test
     fun `stale fileMode is corrected to match the filesystem`() = runBlocking {
         // Simulate a repository carried over from a filesystem with different
         // capabilities than the one it now lives on.
         val config = git.repository.config
-        config.setBoolean("core", null, "fileMode", !filesystemSupportsExecute())
+        config.setBoolean("core", null, "fileMode", !filesystemStoresExecutableBit())
         config.save()
 
         assertTrue(manager.alignConfigWithFilesystem(repoDir).isSuccess)
 
         assertEquals(
-            filesystemSupportsExecute().toString(),
+            filesystemStoresExecutableBit().toString(),
             fileModeSetting()
         )
+    }
+
+    /**
+     * The value has to come from probing the filesystem. `FS.supportsExecute()`
+     * reports platform capability and answers true on Android even where the
+     * storage drops the bit, which is the case this whole mechanism exists for.
+     */
+    @Test
+    fun `executable bit support is determined by probing, and the probe cleans up`() {
+        val gitDir = git.repository.directory
+
+        val probed = manager.filesystemStoresExecutableBit(gitDir)
+
+        assertEquals(filesystemStoresExecutableBit(), probed)
+        assertTrue(
+            "the probe must not leave files behind in .git",
+            gitDir.listFiles().orEmpty().none { it.name.contains("probe") }
+        )
+    }
+
+    @Test
+    fun `repeated probing is stable`() {
+        val gitDir = git.repository.directory
+        val first = manager.filesystemStoresExecutableBit(gitDir)
+        assertEquals(first, manager.filesystemStoresExecutableBit(gitDir))
+        assertEquals(first, manager.filesystemStoresExecutableBit(gitDir))
+    }
+
+    @Test
+    fun `missing fileMode entry counts as stale and gets written`() = runBlocking {
+        // A repository created by command-line git elsewhere may simply not carry
+        // the key, in which case git's default (true) applies and the value has to
+        // be written explicitly rather than left absent.
+        val config = git.repository.config
+        config.unset("core", null, "fileMode")
+        config.save()
+        assertEquals(null, fileModeSetting())
+
+        assertTrue(manager.alignConfigWithFilesystem(repoDir).isSuccess)
+
+        assertEquals(filesystemStoresExecutableBit().toString(), fileModeSetting())
     }
 
     @Test

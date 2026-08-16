@@ -2,6 +2,7 @@ package com.example.roboticgit.ui.screens
 
 import androidx.compose.animation.*
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -30,7 +31,9 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
@@ -913,11 +916,15 @@ fun DiffDialog(
                 if (diffText == null) {
                     CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
                 } else {
-                    Column(
-                        modifier = Modifier
-                            .verticalScroll(rememberScrollState())
-                    ) {
-                        diffText.split("\n").forEach { line ->
+                    // Splitting on every recomposition would redo this for a diff
+                    // that has not changed.
+                    val lines = remember(diffText) { diffText.split("\n") }
+
+                    // LazyColumn, not Column + verticalScroll: the old version
+                    // composed a Text node for every line up front, which froze the
+                    // main thread for over seven seconds on a five-thousand-line diff.
+                    LazyColumn(modifier = Modifier.fillMaxWidth()) {
+                        items(lines) { line ->
                             val bgColor = when {
                                 line.startsWith("+") -> extendedColors.diffAddedBackground
                                 line.startsWith("-") -> extendedColors.diffRemovedBackground
@@ -1039,8 +1046,6 @@ fun CodeEditor(
     val gutterBackground = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
     val gutterTextColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
     val guideColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f)
-    val whitespaceColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.2f)
-    val whitespaceTransformation = remember(whitespaceColor) { WhitespaceVisualTransformation(whitespaceColor) }
 
     // Pinch gesture modifier - smooth continuous zoom with stabilization
     val pinchModifier = if (onFontSizeChange != null) {
@@ -1165,58 +1170,15 @@ fun CodeEditor(
                     color = MaterialTheme.colorScheme.onSurface
                 ),
                 cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                onTextLayout = { textLayoutResult = it },
-                visualTransformation = whitespaceTransformation
+                onTextLayout = { textLayoutResult = it }
+                // No VisualTransformation here on purpose. Rendering whitespace as
+                // dots and arrows meant rebuilding the entire AnnotatedString one
+                // character at a time on every keystroke, and the accompanying
+                // OffsetMapping walked the text from the start for each cursor
+                // query. The indent guides drawn on the Canvas above give most of
+                // the same benefit for a fraction of the cost.
             )
         }
-    }
-}
-
-class WhitespaceVisualTransformation(
-    private val whitespaceColor: Color
-) : VisualTransformation {
-    override fun filter(text: AnnotatedString): TransformedText {
-        val builder = AnnotatedString.Builder()
-
-        for (char in text.text) {
-            when (char) {
-                ' ' -> builder.append(AnnotatedString(
-                    "·",
-                    SpanStyle(color = whitespaceColor)
-                ))
-                '\t' -> builder.append(AnnotatedString(
-                    "→   ",
-                    SpanStyle(color = whitespaceColor)
-                ))
-                else -> builder.append(char.toString())
-            }
-        }
-
-        val offsetMapping = object : OffsetMapping {
-            override fun originalToTransformed(offset: Int): Int {
-                var transformedOffset = 0
-                for (i in 0 until offset.coerceAtMost(text.text.length)) {
-                    if (text.text[i] == '\t') transformedOffset += 4 else transformedOffset++
-                }
-                return transformedOffset
-            }
-
-            override fun transformedToOriginal(offset: Int): Int {
-                var currentTransformed = 0
-                var originalOffset = 0
-                while (currentTransformed < offset && originalOffset < text.text.length) {
-                    if (text.text[originalOffset] == '\t') {
-                        currentTransformed += 4
-                    } else {
-                        currentTransformed++
-                    }
-                    originalOffset++
-                }
-                return originalOffset.coerceAtMost(text.text.length)
-            }
-        }
-
-        return TransformedText(builder.toAnnotatedString(), offsetMapping)
     }
 }
 
@@ -1933,6 +1895,55 @@ private fun parseSideBySideDiff(diffText: String): List<SideBySideLine> {
     return result
 }
 
+/** How tall the inline diff preview may grow before it scrolls on its own. */
+private val DIFF_PREVIEW_MAX_HEIGHT = 360.dp
+
+/**
+ * One row of the unified (narrow-screen) rendering, already flattened.
+ *
+ * The side-by-side model pairs an old and a new line per entry, and the unified
+ * view expands each pair into one or two rows. Doing that expansion up front
+ * gives LazyColumn a flat list it can index into, which is what lets it skip
+ * composing rows that are off screen.
+ */
+private data class UnifiedDiffRow(
+    val oldLineNumber: Int?,
+    val newLineNumber: Int?,
+    val content: String,
+    val prefix: String,
+    val type: DiffLineType
+)
+
+private fun flattenToUnifiedRows(lines: List<SideBySideLine>): List<UnifiedDiffRow> {
+    val rows = mutableListOf<UnifiedDiffRow>()
+    lines.forEach { line ->
+        if (line.isHunkHeader) {
+            rows.add(
+                UnifiedDiffRow(null, null, line.hunkText, "", DiffLineType.HUNK_HEADER)
+            )
+            return@forEach
+        }
+        line.left?.takeIf { it.type == DiffLineType.REMOVED }?.let {
+            rows.add(UnifiedDiffRow(it.oldLineNumber, null, it.content, "-", DiffLineType.REMOVED))
+        }
+        line.right?.takeIf { it.type == DiffLineType.ADDED }?.let {
+            rows.add(UnifiedDiffRow(null, it.newLineNumber, it.content, "+", DiffLineType.ADDED))
+        }
+        line.left?.takeIf { it.type == DiffLineType.CONTEXT }?.let {
+            rows.add(
+                UnifiedDiffRow(
+                    it.oldLineNumber,
+                    line.right?.newLineNumber,
+                    it.content,
+                    " ",
+                    DiffLineType.CONTEXT
+                )
+            )
+        }
+    }
+    return rows
+}
+
 @Composable
 fun SideBySideDiffView(
     diffText: String,
@@ -1969,271 +1980,218 @@ fun SideBySideDiffView(
         (maxLineNum.toString().length * 8 + 12).coerceAtLeast(32)
     }
 
+    // Resolved once here rather than per row: MaterialTheme lookups inside a
+    // LazyColumn item run again for every row that scrolls into view.
     val gutterBg = MaterialTheme.colorScheme.surfaceContainerHigh
     val gutterTextColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
     val separatorColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
     val hunkBg = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
     val hunkTextColor = MaterialTheme.colorScheme.primary
+    val contextTextColor = MaterialTheme.colorScheme.onSurfaceVariant
+    val separatorWidthPx = with(LocalDensity.current) { 2.dp.toPx() }
 
     BoxWithConstraints(modifier = modifier) {
         val isSideBySide = maxWidth >= 600.dp
 
-        if (isSideBySide) {
-            // === Side-by-side mode ===
-            // Use IntrinsicSize.Min on the parent Row so the center divider
-            // can use fillMaxHeight() correctly
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(IntrinsicSize.Min)
-            ) {
-                val leftScrollState = rememberScrollState()
-                val rightScrollState = rememberScrollState()
+        // Shared across every row so the two panes each scroll as a unit.
+        val leftScrollState = rememberScrollState()
+        val rightScrollState = rememberScrollState()
 
-                // Left pane (old file) — no verticalScroll (parent LazyColumn handles it)
-                Column(
-                    modifier = Modifier.weight(1f)
-                ) {
-                    // Header
-                    Surface(
-                        color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.3f),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text(
-                            text = "  ← Original",
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                        )
-                    }
+        // LazyListScope is not a composable scope, so this has to be hoisted.
+        val unifiedRows = remember(parsedLines) { flattenToUnifiedRows(parsedLines) }
 
-                    parsedLines.forEach { sideBySideLine ->
-                        if (sideBySideLine.isHunkHeader) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .background(hunkBg)
-                                    .padding(horizontal = 4.dp, vertical = 2.dp)
-                            ) {
-                                Text(
-                                    text = sideBySideLine.hunkText,
-                                    fontSize = 10.sp,
-                                    fontFamily = FontFamily.Monospace,
-                                    color = hunkTextColor,
-                                    maxLines = 1
-                                )
-                            }
-                        } else {
-                            val leftLine = sideBySideLine.left
-                            val bgColor = when (leftLine?.type) {
-                                DiffLineType.REMOVED -> extendedColors.diffRemovedBackground
-                                else -> Color.Transparent
-                            }
-                            val textColor = when (leftLine?.type) {
-                                DiffLineType.REMOVED -> extendedColors.diffRemovedText
-                                else -> MaterialTheme.colorScheme.onSurfaceVariant
-                            }
-
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .background(bgColor)
-                                    .horizontalScroll(leftScrollState),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                // Line number gutter
-                                Box(
-                                    modifier = Modifier
-                                        .width(gutterWidth.dp)
-                                        .background(gutterBg),
-                                    contentAlignment = Alignment.CenterEnd
-                                ) {
-                                    Text(
-                                        text = leftLine?.oldLineNumber?.toString() ?: "",
-                                        fontSize = 10.sp,
-                                        fontFamily = FontFamily.Monospace,
-                                        color = gutterTextColor,
-                                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
-                                    )
-                                }
-                                // Content
-                                Text(
-                                    text = leftLine?.content ?: "",
-                                    color = if (leftLine != null) textColor else Color.Transparent,
-                                    fontSize = 11.sp,
-                                    fontFamily = FontFamily.Monospace,
-                                    modifier = Modifier
-                                        .padding(horizontal = 4.dp, vertical = 1.dp),
-                                    softWrap = false,
-                                    maxLines = 1
-                                )
-                            }
-                        }
-                    }
-                }
-
-                // Center divider — works because parent Row has height(IntrinsicSize.Min)
-                Spacer(
-                    modifier = Modifier
-                        .width(2.dp)
-                        .fillMaxHeight()
-                        .background(separatorColor)
-                )
-
-                // Right pane (new file) — no verticalScroll
-                Column(
-                    modifier = Modifier.weight(1f)
-                ) {
-                    // Header
-                    Surface(
-                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text(
-                            text = "  → Modified",
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                        )
-                    }
-
-                    parsedLines.forEach { sideBySideLine ->
-                        if (sideBySideLine.isHunkHeader) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .background(hunkBg)
-                                    .padding(horizontal = 4.dp, vertical = 2.dp)
-                            ) {
-                                Text(
-                                    text = sideBySideLine.hunkText,
-                                    fontSize = 10.sp,
-                                    fontFamily = FontFamily.Monospace,
-                                    color = hunkTextColor,
-                                    maxLines = 1
-                                )
-                            }
-                        } else {
-                            val rightLine = sideBySideLine.right
-                            val bgColor = when (rightLine?.type) {
-                                DiffLineType.ADDED -> extendedColors.diffAddedBackground
-                                else -> Color.Transparent
-                            }
-                            val textColor = when (rightLine?.type) {
-                                DiffLineType.ADDED -> extendedColors.diffAddedText
-                                else -> MaterialTheme.colorScheme.onSurfaceVariant
-                            }
-
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .background(bgColor)
-                                    .horizontalScroll(rightScrollState),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .width(gutterWidth.dp)
-                                        .background(gutterBg),
-                                    contentAlignment = Alignment.CenterEnd
-                                ) {
-                                    Text(
-                                        text = rightLine?.newLineNumber?.toString() ?: "",
-                                        fontSize = 10.sp,
-                                        fontFamily = FontFamily.Monospace,
-                                        color = gutterTextColor,
-                                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
-                                    )
-                                }
-                                Text(
-                                    text = rightLine?.content ?: "",
-                                    color = if (rightLine != null) textColor else Color.Transparent,
-                                    fontSize = 11.sp,
-                                    fontFamily = FontFamily.Monospace,
-                                    modifier = Modifier
-                                        .padding(horizontal = 4.dp, vertical = 1.dp),
-                                    softWrap = false,
-                                    maxLines = 1
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        } else {
-            // === Unified mode (narrow screen) with line numbers ===
-            // No verticalScroll — parent LazyColumn handles scrolling
-            Column(modifier = Modifier.fillMaxWidth()) {
-                parsedLines.forEach { sideBySideLine ->
-                    if (sideBySideLine.isHunkHeader) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .background(hunkBg)
-                                .padding(horizontal = 4.dp, vertical = 2.dp)
+        // A bounded height turns this into its own scroll region, which is what
+        // lets it be lazy at all: an unbounded LazyColumn cannot virtualise.
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = DIFF_PREVIEW_MAX_HEIGHT)
+        ) {
+            if (isSideBySide) {
+                item(key = "header") {
+                    Row(modifier = Modifier.fillMaxWidth()) {
+                        Surface(
+                            color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.3f),
+                            modifier = Modifier.weight(1f)
                         ) {
                             Text(
-                                text = sideBySideLine.hunkText,
-                                fontSize = 10.sp,
-                                fontFamily = FontFamily.Monospace,
-                                color = hunkTextColor,
-                                maxLines = 1
+                                text = "  ← Original",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                             )
                         }
+                        Surface(
+                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text(
+                                text = "  → Modified",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            )
+                        }
+                    }
+                }
+
+                items(parsedLines.size) { index ->
+                    val line = parsedLines[index]
+                    if (line.isHunkHeader) {
+                        HunkHeaderRow(line.hunkText, hunkBg, hunkTextColor)
                     } else {
-                        // Show removed lines
-                        sideBySideLine.left?.let { leftLine ->
-                            if (leftLine.type == DiffLineType.REMOVED) {
-                                UnifiedDiffLineRow(
-                                    oldLineNum = leftLine.oldLineNumber,
-                                    newLineNum = null,
-                                    content = leftLine.content,
-                                    prefix = "-",
-                                    bgColor = extendedColors.diffRemovedBackground,
-                                    textColor = extendedColors.diffRemovedText,
-                                    gutterBg = gutterBg,
-                                    gutterTextColor = gutterTextColor,
-                                    gutterWidth = gutterWidth
-                                )
-                            }
-                        }
-                        // Show added lines
-                        sideBySideLine.right?.let { rightLine ->
-                            if (rightLine.type == DiffLineType.ADDED) {
-                                UnifiedDiffLineRow(
-                                    oldLineNum = null,
-                                    newLineNum = rightLine.newLineNumber,
-                                    content = rightLine.content,
-                                    prefix = "+",
-                                    bgColor = extendedColors.diffAddedBackground,
-                                    textColor = extendedColors.diffAddedText,
-                                    gutterBg = gutterBg,
-                                    gutterTextColor = gutterTextColor,
-                                    gutterWidth = gutterWidth
-                                )
-                            }
-                        }
-                        // Context lines (shown once)
-                        if (sideBySideLine.left?.type == DiffLineType.CONTEXT) {
-                            val ctxLine = sideBySideLine.left
-                            UnifiedDiffLineRow(
-                                oldLineNum = ctxLine.oldLineNumber,
-                                newLineNum = sideBySideLine.right?.newLineNumber,
-                                content = ctxLine.content,
-                                prefix = " ",
-                                bgColor = Color.Transparent,
-                                textColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                        // Both halves live in one row, so they stay aligned without
+                        // the parent needing height(IntrinsicSize.Min) -- which used
+                        // to force a second measure pass over the entire diff.
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            DiffPaneCell(
+                                content = line.left?.content,
+                                lineNumber = line.left?.oldLineNumber,
+                                bgColor = if (line.left?.type == DiffLineType.REMOVED) {
+                                    extendedColors.diffRemovedBackground
+                                } else {
+                                    Color.Transparent
+                                },
+                                textColor = if (line.left?.type == DiffLineType.REMOVED) {
+                                    extendedColors.diffRemovedText
+                                } else {
+                                    contextTextColor
+                                },
+                                gutterWidth = gutterWidth,
                                 gutterBg = gutterBg,
                                 gutterTextColor = gutterTextColor,
-                                gutterWidth = gutterWidth
+                                scrollState = leftScrollState,
+                                modifier = Modifier.weight(1f)
+                            )
+                            DiffPaneCell(
+                                content = line.right?.content,
+                                lineNumber = line.right?.newLineNumber,
+                                bgColor = if (line.right?.type == DiffLineType.ADDED) {
+                                    extendedColors.diffAddedBackground
+                                } else {
+                                    Color.Transparent
+                                },
+                                textColor = if (line.right?.type == DiffLineType.ADDED) {
+                                    extendedColors.diffAddedText
+                                } else {
+                                    contextTextColor
+                                },
+                                gutterWidth = gutterWidth,
+                                gutterBg = gutterBg,
+                                gutterTextColor = gutterTextColor,
+                                scrollState = rightScrollState,
+                                // The centre divider, drawn over the cell's own
+                                // background so it does not depend on the row
+                                // reporting an intrinsic height.
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .drawWithContent {
+                                        drawContent()
+                                        drawRect(
+                                            color = separatorColor,
+                                            size = Size(separatorWidthPx, size.height)
+                                        )
+                                    }
                             )
                         }
+                    }
+                }
+            } else {
+                items(unifiedRows.size) { index ->
+                    val row = unifiedRows[index]
+                    when (row.type) {
+                        DiffLineType.HUNK_HEADER -> HunkHeaderRow(row.content, hunkBg, hunkTextColor)
+                        else -> UnifiedDiffLineRow(
+                            oldLineNum = row.oldLineNumber,
+                            newLineNum = row.newLineNumber,
+                            content = row.content,
+                            prefix = row.prefix,
+                            bgColor = when (row.type) {
+                                DiffLineType.ADDED -> extendedColors.diffAddedBackground
+                                DiffLineType.REMOVED -> extendedColors.diffRemovedBackground
+                                else -> Color.Transparent
+                            },
+                            textColor = when (row.type) {
+                                DiffLineType.ADDED -> extendedColors.diffAddedText
+                                DiffLineType.REMOVED -> extendedColors.diffRemovedText
+                                else -> contextTextColor
+                            },
+                            gutterBg = gutterBg,
+                            gutterTextColor = gutterTextColor,
+                            gutterWidth = gutterWidth
+                        )
                     }
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun HunkHeaderRow(text: String, background: Color, textColor: Color) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(background)
+            .padding(horizontal = 4.dp, vertical = 2.dp)
+    ) {
+        Text(
+            text = text,
+            fontSize = 10.sp,
+            fontFamily = FontFamily.Monospace,
+            color = textColor,
+            maxLines = 1
+        )
+    }
+}
+
+/** One side of a side-by-side row: line-number gutter plus content. */
+@Composable
+private fun DiffPaneCell(
+    content: String?,
+    lineNumber: Int?,
+    bgColor: Color,
+    textColor: Color,
+    gutterWidth: Int,
+    gutterBg: Color,
+    gutterTextColor: Color,
+    scrollState: ScrollState,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier
+            .background(bgColor)
+            .horizontalScroll(scrollState),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .width(gutterWidth.dp)
+                .background(gutterBg),
+            contentAlignment = Alignment.CenterEnd
+        ) {
+            Text(
+                text = lineNumber?.toString() ?: "",
+                fontSize = 10.sp,
+                fontFamily = FontFamily.Monospace,
+                color = gutterTextColor,
+                modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+            )
+        }
+        Text(
+            text = content ?: "",
+            color = if (content != null) textColor else Color.Transparent,
+            fontSize = 11.sp,
+            fontFamily = FontFamily.Monospace,
+            modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
+            softWrap = false,
+            maxLines = 1
+        )
     }
 }
 

@@ -572,13 +572,13 @@ class GitManager(private val rootDir: File) {
         try {
             Git.open(directory).use { git ->
                 val config = git.repository.config
-                val supportsExecute = git.repository.fs?.supportsExecute() ?: FS.DETECTED.supportsExecute()
+                val storesExecutableBit = filesystemStoresExecutableBit(git.repository.directory)
                 val currentFileMode = config.getString("core", null, "fileMode")?.toBooleanStrictOrNull()
 
-                if (currentFileMode != supportsExecute) {
-                    config.setBoolean("core", null, "fileMode", supportsExecute)
-                    if (!supportsExecute) {
-                        // Symlinks are unavailable on the same storage, and leaving
+                if (currentFileMode != storesExecutableBit) {
+                    config.setBoolean("core", null, "fileMode", storesExecutableBit)
+                    if (!storesExecutableBit) {
+                        // The same storage cannot hold symlinks either, and leaving
                         // this on turns every tracked symlink into a phantom change.
                         config.setBoolean("core", null, "symlinks", false)
                     }
@@ -588,6 +588,29 @@ class GitManager(private val rootDir: File) {
             }
         } catch (e: Exception) {
             Result.failure(e)
+        }
+    }
+
+    /**
+     * Tests whether [probeDirectory]'s filesystem actually keeps the executable
+     * bit, by setting it on a scratch file and reading it back.
+     *
+     * `FS.supportsExecute()` reports what the *platform* can do, and on Android it
+     * answers true even though the emulated storage backing `/sdcard` silently
+     * drops the bit. Asking the filesystem directly is the only reliable answer.
+     * The probe file goes in the `.git` directory so a crash mid-probe cannot
+     * leave a stray untracked file in the user's working tree.
+     */
+    internal fun filesystemStoresExecutableBit(probeDirectory: File): Boolean {
+        val probe = File(probeDirectory, "roboticgit-exec-probe.tmp")
+        return try {
+            probe.delete()
+            if (!probe.createNewFile()) return FS.DETECTED.supportsExecute()
+            probe.setExecutable(true, true) && probe.canExecute()
+        } catch (e: Exception) {
+            FS.DETECTED.supportsExecute()
+        } finally {
+            probe.delete()
         }
     }
 

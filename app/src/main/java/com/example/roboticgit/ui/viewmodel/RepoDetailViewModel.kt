@@ -60,7 +60,14 @@ class RepoDetailViewModel(
     val conflictingFiles: StateFlow<List<String>> = _conflictingFiles.asStateFlow()
 
     init {
-        loadData()
+        viewModelScope.launch {
+            // Also done when a repository is first added, but repositories added
+            // before that existed -- or cloned on a machine whose filesystem could
+            // store the executable bit -- would otherwise keep showing phantom
+            // modifications forever. It only writes when the value is wrong.
+            gitManager.alignConfigWithFilesystem(repo.localPath)
+            loadData()
+        }
     }
 
     fun loadData() {
