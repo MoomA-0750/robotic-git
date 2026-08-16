@@ -21,15 +21,40 @@ android {
         }
     }
 
+    signingConfigs {
+        // Signed with the debug key on purpose. This is a personal app that is
+        // not distributed through a store, and an unsigned release APK cannot be
+        // installed -- which would make the release build impossible to measure
+        // or test on a device. Replace this if it is ever published.
+        create("releaseLocal") {
+            storeFile = File(System.getProperty("user.home"), ".android/debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
+            signingConfig = signingConfigs.getByName("releaseLocal")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            // The instrumentation APK is shrunk by a separate R8 pass that does
+            // not inherit the rules above; without this the test build fails on
+            // the same absent compile-time annotations.
+            testProguardFiles("proguard-test-rules.pro")
         }
     }
+
+    // Instrumentation tests normally run against debug. Pointing them at release
+    // is the only way to find out whether R8 stripped something JGit reaches by
+    // reflection, so it is switchable:
+    //     ./gradlew connectedAndroidTest -PtestBuildType=release
+    testBuildType = (project.findProperty("testBuildType") as String?) ?: "debug"
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
