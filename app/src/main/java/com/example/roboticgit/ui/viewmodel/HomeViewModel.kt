@@ -111,6 +111,11 @@ class HomeViewModel(
         viewModelScope.launch {
             val file = File(path)
             if (file.exists() && file.isDirectory && File(file, ".git").exists()) {
+                // The repo was created elsewhere, so its config still reflects that
+                // filesystem. On /sdcard the executable bit cannot be stored and
+                // every executable tracked file would show up as permanently
+                // modified until core.fileMode is turned off.
+                gitManager.alignConfigWithFilesystem(file)
                 authManager.addTrackedRepoPath(file.absolutePath)
                 loadRepositories()
             }

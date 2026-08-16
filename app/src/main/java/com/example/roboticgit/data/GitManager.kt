@@ -15,6 +15,7 @@ import org.eclipse.jgit.api.MergeCommand
 import org.eclipse.jgit.api.MergeResult as JGitMergeResult
 import org.eclipse.jgit.lib.ObjectId
 import org.eclipse.jgit.lib.RepositoryState
+import org.eclipse.jgit.api.errors.EmptyCommitException
 import org.eclipse.jgit.api.errors.GitAPIException
 import org.eclipse.jgit.diff.DiffEntry
 import org.eclipse.jgit.diff.DiffFormatter
@@ -23,8 +24,12 @@ import org.eclipse.jgit.lib.Constants
 import org.eclipse.jgit.lib.ProgressMonitor
 import org.eclipse.jgit.revwalk.RevCommit
 import org.eclipse.jgit.revwalk.RevWalk
+import org.eclipse.jgit.api.PullResult
+import org.eclipse.jgit.transport.PushResult
+import org.eclipse.jgit.transport.RemoteRefUpdate
 import org.eclipse.jgit.transport.UsernamePasswordCredentialsProvider
 import org.eclipse.jgit.treewalk.CanonicalTreeParser
+import org.eclipse.jgit.util.FS
 import org.eclipse.jgit.treewalk.FileTreeIterator
 import org.eclipse.jgit.treewalk.filter.PathFilter
 import java.io.ByteArrayOutputStream
@@ -159,13 +164,17 @@ class GitManager(private val rootDir: File) {
         }
     }
 
-    suspend fun getCommits(repo: GitRepo): Result<List<RevCommit>> = withContext(Dispatchers.IO) {
+    suspend fun getCommits(repo: GitRepo, limit: Int? = null): Result<List<RevCommit>> = withContext(Dispatchers.IO) {
         try {
             Git.open(repo.localPath).use { git ->
                 if (git.repository.resolve(Constants.HEAD) == null) {
                     return@withContext Result.success(emptyList())
                 }
-                val commits = git.log().call().toList()
+                val log = git.log()
+                if (limit != null && limit > 0) {
+                    log.setMaxCount(limit)
+                }
+                val commits = log.call().toList()
                 Result.success(commits)
             }
         } catch (e: Exception) {
@@ -397,9 +406,15 @@ class GitManager(private val rootDir: File) {
     ): Result<Unit> = withContext(Dispatchers.IO) {
         try {
             Git.open(repo.localPath).use { git ->
-                git.add().addFilepattern(".").call() // Auto-add all
-                val commitCommand = git.commit().setMessage(message)
-                
+                // Deliberately no implicit "add ." here: the Changes tab lets the
+                // user choose what to stage, and staging everything behind their
+                // back would commit work they left out on purpose.
+                // setAllowEmpty(false) turns "nothing staged" into a reported
+                // failure instead of a silent empty commit.
+                val commitCommand = git.commit()
+                    .setMessage(message)
+                    .setAllowEmpty(false)
+
                 if (!authorName.isNullOrBlank() && !authorEmail.isNullOrBlank()) {
                     commitCommand.setAuthor(authorName, authorEmail)
                     commitCommand.setCommitter(authorName, authorEmail)
@@ -408,20 +423,52 @@ class GitManager(private val rootDir: File) {
                 commitCommand.call()
                 Result.success(Unit)
             }
+        } catch (e: EmptyCommitException) {
+            // JGit's own wording here is just "No changes", which does not tell the
+            // user that the fix is to stage something.
+            Result.failure(
+                GitOperationException("Nothing is staged. Select the files you want to include first.")
+            )
         } catch (e: Exception) {
             Result.failure(e)
         }
     }
 
-    suspend fun push(repo: GitRepo, token: String? = null): Result<Unit> = withContext(Dispatchers.IO) {
+    suspend fun push(repo: GitRepo, token: String? = null): Result<PushOutcome> = withContext(Dispatchers.IO) {
         try {
             Git.open(repo.localPath).use { git ->
                 val pushCommand = git.push()
                 if (!token.isNullOrBlank()) {
                     pushCommand.setCredentialsProvider(UsernamePasswordCredentialsProvider("token", token))
                 }
-                pushCommand.call()
-                Result.success(Unit)
+
+                // JGit throws only for transport- and auth-level problems. A ref the
+                // remote refuses -- non-fast-forward above all -- comes back merely
+                // as a status on the result. Discarding the result therefore makes a
+                // push that transferred nothing indistinguishable from one that
+                // worked, which is exactly the "display diverges from reality" bug.
+                val results = pushCommand.call().toList()
+                val updates = results.flatMap { it.remoteUpdates }
+
+                if (updates.isEmpty()) {
+                    return@use Result.failure(
+                        GitOperationException(
+                            "Nothing was pushed. This branch has no matching branch on the remote yet."
+                        )
+                    )
+                }
+
+                val rejected = updates.filterNot { it.status in ACCEPTED_PUSH_STATUSES }
+                if (rejected.isNotEmpty()) {
+                    return@use Result.failure(GitOperationException(describePushRejection(rejected, results)))
+                }
+
+                val advanced = updates.filter { it.status == RemoteRefUpdate.Status.OK }
+                if (advanced.isEmpty()) {
+                    Result.success(PushOutcome.UpToDate)
+                } else {
+                    Result.success(PushOutcome.Pushed(advanced.map { shortenRefName(it.remoteName) }))
+                }
             }
         } catch (e: Exception) {
             Result.failure(e)
@@ -435,7 +482,108 @@ class GitManager(private val rootDir: File) {
                 if (!token.isNullOrBlank()) {
                     pullCommand.setCredentialsProvider(UsernamePasswordCredentialsProvider("token", token))
                 }
-                pullCommand.call()
+
+                // As with push, a merge that stops on conflicts is a normal return
+                // value rather than an exception.
+                val result = pullCommand.call()
+                if (result.isSuccessful) {
+                    Result.success(Unit)
+                } else {
+                    Result.failure(GitOperationException(describePullFailure(result)))
+                }
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    private fun shortenRefName(ref: String): String =
+        ref.removePrefix("refs/heads/").removePrefix("refs/tags/")
+
+    private fun describePushRejection(
+        rejected: List<RemoteRefUpdate>,
+        results: List<PushResult>
+    ): String {
+        val details = rejected.joinToString("; ") { update ->
+            val reason = when (update.status) {
+                RemoteRefUpdate.Status.REJECTED_NONFASTFORWARD ->
+                    "rejected (non-fast-forward). Pull and merge the remote changes first."
+                RemoteRefUpdate.Status.REJECTED_REMOTE_CHANGED ->
+                    "rejected because the remote ref moved since it was last fetched."
+                RemoteRefUpdate.Status.REJECTED_NODELETE ->
+                    "rejected: the remote refused to delete this ref."
+                RemoteRefUpdate.Status.REJECTED_OTHER_REASON ->
+                    "rejected: ${update.message ?: "no reason given"}"
+                RemoteRefUpdate.Status.NON_EXISTING ->
+                    "the remote ref does not exist."
+                RemoteRefUpdate.Status.NOT_ATTEMPTED ->
+                    "not attempted."
+                RemoteRefUpdate.Status.AWAITING_REPORT ->
+                    "the remote never reported the outcome."
+                else -> update.status.name
+            }
+            "${shortenRefName(update.remoteName)}: $reason"
+        }
+
+        val remoteMessages = results
+            .mapNotNull { it.messages?.trim()?.takeIf(String::isNotEmpty) }
+            .joinToString("\n")
+
+        return if (remoteMessages.isEmpty()) details else "$details\n$remoteMessages"
+    }
+
+    private fun describePullFailure(result: PullResult): String {
+        result.mergeResult?.let { merge ->
+            val conflicts = merge.conflicts?.keys.orEmpty()
+            if (conflicts.isNotEmpty()) {
+                return "Pull stopped with conflicts in: ${conflicts.joinToString(", ")}"
+            }
+            val failing = merge.failingPaths?.entries
+                ?.joinToString(", ") { "${it.key} (${it.value})" }
+            if (!failing.isNullOrBlank()) {
+                return "Pull could not update: $failing"
+            }
+            return "Pull failed: ${merge.mergeStatus}"
+        }
+        result.rebaseResult?.let { rebase ->
+            val conflicts = rebase.conflicts?.joinToString(", ")
+            if (!conflicts.isNullOrBlank()) {
+                return "Pull (rebase) stopped with conflicts in: $conflicts"
+            }
+            return "Pull (rebase) failed: ${rebase.status}"
+        }
+        return "Pull failed"
+    }
+
+    /**
+     * Aligns a repository's config with what the underlying filesystem can
+     * actually represent.
+     *
+     * Android's emulated storage (`/sdcard`) silently drops the executable bit,
+     * so with `core.fileMode` left on, every already-executable tracked file
+     * reports as permanently MODIFIED. JGit probes this itself when it clones,
+     * but a repository created elsewhere and merely opened by the app keeps
+     * whatever its original filesystem supported. Call this when registering
+     * such a repository.
+     *
+     * Writes only when the value actually differs, so it is cheap to repeat.
+     */
+    suspend fun alignConfigWithFilesystem(directory: File): Result<Unit> = withContext(Dispatchers.IO) {
+        try {
+            Git.open(directory).use { git ->
+                val config = git.repository.config
+                val supportsExecute = git.repository.fs?.supportsExecute() ?: FS.DETECTED.supportsExecute()
+                val currentFileMode = config.getString("core", null, "fileMode")?.toBooleanStrictOrNull()
+
+                if (currentFileMode != supportsExecute) {
+                    config.setBoolean("core", null, "fileMode", supportsExecute)
+                    if (!supportsExecute) {
+                        // Symlinks are unavailable on the same storage, and leaving
+                        // this on turns every tracked symlink into a phantom change.
+                        config.setBoolean("core", null, "symlinks", false)
+                    }
+                    config.save()
+                }
                 Result.success(Unit)
             }
         } catch (e: Exception) {
@@ -830,7 +978,18 @@ class GitManager(private val rootDir: File) {
             Result.failure(e)
         }
     }
+
+    private companion object {
+        /** Statuses that mean the remote accepted the ref, whether or not it moved. */
+        val ACCEPTED_PUSH_STATUSES = setOf(
+            RemoteRefUpdate.Status.OK,
+            RemoteRefUpdate.Status.UP_TO_DATE
+        )
+    }
 }
+
+/** A git operation that completed without throwing, but did not do what was asked. */
+class GitOperationException(message: String) : Exception(message)
 
 data class RepoFile(
     val name: String,
@@ -842,3 +1001,12 @@ data class CommitChange(
     val path: String,
     val changeType: String
 )
+
+/** What a push actually did, so the UI can tell "sent" apart from "nothing to send". */
+sealed interface PushOutcome {
+    /** At least one ref on the remote advanced. [refs] names them. */
+    data class Pushed(val refs: List<String>) : PushOutcome
+
+    /** The remote already had everything; nothing was transferred. */
+    data object UpToDate : PushOutcome
+}
