@@ -30,10 +30,10 @@ class MainActivity : ComponentActivity() {
     @OptIn(ExperimentalMaterial3WindowSizeClassApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        
+
         enableEdgeToEdge()
 
-        val authManager = AuthManager(this)
+        val authManager = AuthManager.get(this)
         settingsViewModel = ViewModelProvider(this, SettingsViewModelFactory(authManager))[SettingsViewModel::class.java]
 
         checkStoragePermission()

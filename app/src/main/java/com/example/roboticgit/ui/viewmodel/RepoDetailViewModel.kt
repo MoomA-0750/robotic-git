@@ -23,7 +23,9 @@ import com.example.roboticgit.data.model.RemoteInfo
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.security.MessageDigest
 
@@ -185,9 +187,11 @@ class RepoDetailViewModel(
      * so a Gitea repository was pushed with a GitHub token. Matching on the
      * remote's host sends each token only to the host it was issued for.
      */
-    private fun accountForRemote(): Account? {
+    private suspend fun accountForRemote(): Account? {
         val remote = _remotes.value.firstOrNull { it.name == "origin" } ?: _remotes.value.firstOrNull()
-        return authManager.getAccounts().forRemote(remote?.pushUrl)
+        // getAccounts() unlocks the Keystore on first use; keep it off the main thread.
+        val accounts = withContext(Dispatchers.IO) { authManager.getAccounts() }
+        return accounts.forRemote(remote?.pushUrl)
     }
 
     /** Names the host when nothing is stored for it, so the user knows what to add. */
@@ -268,7 +272,7 @@ class RepoDetailViewModel(
      * authentication, since "check your token" is not actionable if the user
      * never had an account for that host to begin with.
      */
-    private fun describeAuthAwareFailure(prefix: String, error: Throwable): String {
+    private suspend fun describeAuthAwareFailure(prefix: String, error: Throwable): String {
         val base = "$prefix: ${error.message}"
         if (error !is GitError.AuthenticationFailed) return base
         val hint = missingAccountHint()?.takeIf { accountForRemote() == null } ?: return base

@@ -85,7 +85,7 @@ fun RepoDetailScreen(
     showBackButton: Boolean = true
 ) {
     val context = LocalContext.current
-    val authManager = remember { AuthManager(context) }
+    val authManager = remember { AuthManager.get(context) }
     val rootDir = remember { File(authManager.getDefaultCloneDir()) }
     // EncryptedSharedPreferences read; must not happen on every recomposition.
     val editorFontSize = remember { authManager.getEditorFontSize().toFloat() }
