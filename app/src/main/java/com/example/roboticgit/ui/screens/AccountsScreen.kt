@@ -52,6 +52,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.password
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.foundation.text.KeyboardOptions
 import coil.compose.AsyncImage
 import com.example.roboticgit.data.model.AccountType
 import com.example.roboticgit.ui.viewmodel.SettingsViewModel
@@ -236,8 +241,12 @@ fun AddGitHubAccountDialog(
                 value = token,
                 onValueChange = { token = it },
                 label = { Text("GitHub Token") },
-                modifier = Modifier.fillMaxWidth(),
-                shape = ShapeTokens.TextField
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .semantics { password() },
+                shape = ShapeTokens.TextField,
+                visualTransformation = PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password)
             )
             Button(
                 onClick = { onManualAdd(token) },
@@ -307,8 +316,15 @@ fun AddGenericAccountDialog(
                 value = token,
                 onValueChange = { token = it },
                 label = { Text("Access Token") },
-                modifier = Modifier.fillMaxWidth(),
-                shape = ShapeTokens.TextField
+                // A token is a password. Showing it in the clear means anyone
+                // beside the user reads it, and it survives in screenshots. The
+                // semantics say so too, so assistive tech treats it as one.
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .semantics { password() },
+                shape = ShapeTokens.TextField,
+                visualTransformation = PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password)
             )
             if (validationStatus is ValidationStatus.Loading) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 8.dp))
             if (validationStatus is ValidationStatus.Error) {

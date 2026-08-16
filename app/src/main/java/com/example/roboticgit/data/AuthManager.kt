@@ -36,7 +36,12 @@ class AuthManager private constructor(context: Context) {
     private val settings: SharedPreferences =
         appContext.getSharedPreferences(SETTINGS_STORE, Context.MODE_PRIVATE)
 
-    private val secrets: SharedPreferences by lazy { createEncryptedStore(appContext) }
+    /**
+     * Null when the encrypted store cannot be opened at all. See
+     * [openEncryptedStore] -- the app has to keep working without its stored
+     * tokens, because the alternative is not starting.
+     */
+    private val secrets: SharedPreferences? by lazy { openEncryptedStore(appContext) }
 
     init {
         migrateSettingsOutOfEncryptedStoreIfNeeded()
@@ -45,7 +50,7 @@ class AuthManager private constructor(context: Context) {
     // ========== Accounts (encrypted) ==========
 
     fun getAccounts(): List<Account> {
-        val accountsJson = secrets.getString(KEY_ACCOUNTS, null) ?: return emptyList()
+        val accountsJson = secrets?.getString(KEY_ACCOUNTS, null) ?: return emptyList()
         return try {
             json.decodeFromString<List<Account>>(accountsJson)
         } catch (e: Exception) {
@@ -54,7 +59,7 @@ class AuthManager private constructor(context: Context) {
     }
 
     fun saveAccounts(accounts: List<Account>) {
-        secrets.edit().putString(KEY_ACCOUNTS, json.encodeToString(accounts)).apply()
+        secrets?.edit()?.putString(KEY_ACCOUNTS, json.encodeToString(accounts))?.apply()
     }
 
     fun addAccount(account: Account) {
@@ -119,7 +124,7 @@ class AuthManager private constructor(context: Context) {
 
     fun clear() {
         settings.edit().clear().apply()
-        secrets.edit().clear().apply()
+        secrets?.edit()?.clear()?.apply()
     }
 
     /**
@@ -133,7 +138,7 @@ class AuthManager private constructor(context: Context) {
         if (settings.getBoolean(KEY_MIGRATED, false)) return
 
         try {
-            val legacy = secrets
+            val legacy = secrets ?: return
             val editor = settings.edit()
 
             legacy.getString(KEY_CLONE_DIR, null)?.let { editor.putString(KEY_CLONE_DIR, it) }
@@ -190,7 +195,35 @@ class AuthManager private constructor(context: Context) {
                 instance ?: AuthManager(context).also { instance = it }
             }
 
-        private fun createEncryptedStore(context: Context): SharedPreferences =
+        /**
+         * Opens the encrypted store, recovering from a keyset that can no longer
+         * be decrypted.
+         *
+         * The master key lives in the Android Keystore and can be invalidated by
+         * the system -- a restored backup, a changed screen lock, a vendor
+         * update. When that happens the stored keyset is undecryptable and
+         * opening it throws [javax.crypto.AEADBadTagException]. Left to
+         * propagate, that took the whole app down: reading accounts happens on
+         * the way to the first screen, so the app would not start at all.
+         *
+         * Losing the tokens is unavoidable at that point -- nothing can decrypt
+         * them any more -- but they can be entered again, whereas an app that
+         * refuses to open cannot be recovered from inside the app. So: discard
+         * the unreadable store and build a fresh one, and if even that fails,
+         * carry on without stored credentials.
+         */
+        private fun openEncryptedStore(context: Context): SharedPreferences? = try {
+            buildEncryptedStore(context)
+        } catch (first: Exception) {
+            context.deleteSharedPreferences(SECRETS_STORE)
+            try {
+                buildEncryptedStore(context)
+            } catch (second: Exception) {
+                null
+            }
+        }
+
+        private fun buildEncryptedStore(context: Context): SharedPreferences =
             EncryptedSharedPreferences.create(
                 SECRETS_STORE,
                 MasterKeys.getOrCreate(MasterKeys.AES256_GCM_SPEC),

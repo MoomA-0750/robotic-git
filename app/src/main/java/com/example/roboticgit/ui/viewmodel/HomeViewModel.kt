@@ -7,6 +7,7 @@ import com.example.roboticgit.data.AuthManager
 import com.example.roboticgit.data.GitHubApiService
 import com.example.roboticgit.data.GitManager
 import com.example.roboticgit.data.forRemote
+import com.example.roboticgit.data.repoListingBaseUrl
 import com.example.roboticgit.data.model.Account
 import com.example.roboticgit.data.model.GitRepo
 import com.example.roboticgit.data.model.RemoteRepo
@@ -141,20 +142,31 @@ class HomeViewModel(
         }
     }
 
+    /**
+     * The account that speaks for [repo]'s own remote.
+     *
+     * A bulk refresh spans repositories that may live on different forges, so
+     * one token cannot serve them all -- and handing a token to the wrong host
+     * is the failure this app already fixed on the push, pull and clone paths.
+     */
+    private suspend fun tokenFor(repo: GitRepo): String? {
+        val origin = gitManager.listRemotes(repo).getOrNull()
+            ?.let { remotes -> remotes.firstOrNull { it.name == "origin" } ?: remotes.firstOrNull() }
+        return _accounts.value.forRemote(origin?.fetchUrl)?.token
+    }
+
     fun refreshAllRepositories() {
         refreshSelectedRepositories(_repos.value.map { it.name }.toSet())
     }
 
     fun refreshSelectedRepositories(repoNames: Set<String>) {
-        val token = _selectedAccount.value?.token
-
         viewModelScope.launch {
             _isRefreshing.value = true
             try {
                 val reposToFetch = _repos.value.filter { repoNames.contains(it.name) }
                 val fetchTasks = reposToFetch.map { repo ->
                     async {
-                        gitManager.fetch(repo, token)
+                        gitManager.fetch(repo, tokenFor(repo))
                     }
                 }
                 fetchTasks.awaitAll()
@@ -172,7 +184,6 @@ class HomeViewModel(
 
     fun pullSelectedRepositories() {
         val repoNames = _selectedRepos.value
-        val token = _selectedAccount.value?.token
 
         viewModelScope.launch {
             _isRefreshing.value = true
@@ -180,7 +191,7 @@ class HomeViewModel(
                 val reposToPull = _repos.value.filter { repoNames.contains(it.name) }
                 val pullTasks = reposToPull.map { repo ->
                     async {
-                        gitManager.pull(repo, token)
+                        gitManager.pull(repo, tokenFor(repo))
                     }
                 }
                 pullTasks.awaitAll()
@@ -225,11 +236,18 @@ class HomeViewModel(
 
     fun fetchRemoteRepositories() {
         val account = _selectedAccount.value ?: return
+        // Null for forges whose listing API is not wired up. Those can still be
+        // cloned from the Clone tab by pasting a URL.
+        val apiBaseUrl = account.repoListingBaseUrl()
+        if (apiBaseUrl == null) {
+            _remoteRepos.value = emptyList()
+            return
+        }
 
         viewModelScope.launch {
             try {
                 val retrofit = Retrofit.Builder()
-                    .baseUrl(account.baseUrl ?: "https://api.github.com/")
+                    .baseUrl(apiBaseUrl)
                     .client(httpClient)
                     .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
                     .build()

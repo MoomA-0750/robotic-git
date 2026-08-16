@@ -172,7 +172,19 @@ fun HomeScreen(
                         }
                         is HomeUiState.Success -> {
                             if (repos.isEmpty()) {
-                                EmptyState(modifier = Modifier.align(Alignment.Center))
+                                // The title is the list's first item, so with no
+                                // list there was no title either. Lay it out above
+                                // the empty state instead -- and in a Column, since
+                                // this scope stacks its children.
+                                Column(modifier = Modifier.fillMaxSize()) {
+                                    ScreenTitle(modifier = Modifier.padding(16.dp))
+                                    Box(
+                                        modifier = Modifier.fillMaxSize(),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        EmptyState()
+                                    }
+                                }
                             } else {
                                 RepoList(
                                     repos = repos,
@@ -572,6 +584,19 @@ fun SelectionTopBar(
 }
 
 @Composable
+fun ScreenTitle(modifier: Modifier = Modifier) {
+    Text(
+        text = "Repositories",
+        style = MaterialTheme.typography.headlineMedium,
+        fontWeight = FontWeight.Normal,
+        color = MaterialTheme.colorScheme.onSurface,
+        modifier = modifier
+            .statusBarsPadding()
+            .padding(bottom = 8.dp)
+    )
+}
+
+@Composable
 fun RepoList(
     repos: List<GitRepo>,
     selectedRepos: Set<String>,
@@ -585,17 +610,7 @@ fun RepoList(
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        item {
-            Text(
-                text = "Repositories",
-                style = MaterialTheme.typography.headlineMedium,
-                fontWeight = FontWeight.Normal,
-                color = MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier
-                    .statusBarsPadding()
-                    .padding(bottom = 8.dp)
-            )
-        }
+        item { ScreenTitle() }
         items(repos, key = { it.localPath.absolutePath }) { repo ->
             RepoItem(
                 repo = repo,

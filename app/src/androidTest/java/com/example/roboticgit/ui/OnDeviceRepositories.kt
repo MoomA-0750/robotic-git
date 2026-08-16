@@ -20,19 +20,56 @@ object OnDeviceRepositories {
     const val BRANCH = "main"
     const val REPO_NAME = "uitest"
 
+    private var cloneDirBeforeTests: String? = null
+    private var trackedPathsBeforeTests: Set<String>? = null
+
     /**
      * Wipes any previous run and points the app's default clone directory at a
      * fresh workspace.
      *
-     * [AuthManager] is a process-wide singleton, so the clone directory has to
-     * be re-pointed rather than re-constructed.
+     * [AuthManager] is a process-wide singleton backed by persistent storage, so
+     * the clone directory has to be re-pointed rather than re-constructed -- and
+     * the original has to be remembered. A test that repoints it and walks away
+     * leaves the installed app looking for repositories in a directory the test
+     * has since deleted. Pair every call with [restoreDefaultCloneDir].
      */
     fun freshWorkspace(context: Context): File {
+        val auth = AuthManager.get(context)
+        if (cloneDirBeforeTests == null) {
+            cloneDirBeforeTests = auth.getDefaultCloneDir()
+        }
         val workspace = File(context.filesDir, "ui-test-workspace")
         workspace.deleteRecursively()
         workspace.mkdirs()
-        AuthManager.get(context).setDefaultCloneDir(workspace.absolutePath)
+        auth.setDefaultCloneDir(workspace.absolutePath)
         return workspace
+    }
+
+    /**
+     * Empties the list of repositories tracked outside the clone directory, so a
+     * test can see the screen a new user sees.
+     *
+     * Those paths are the user's, not the test's, so they are put back by
+     * [restoreAppState] -- which runs from `@After` and therefore also runs when
+     * an assertion fails. Only a crash of the whole process could strand them,
+     * and they are directory paths, re-addable from the Path tab.
+     */
+    fun clearTrackedRepositories(context: Context) {
+        val auth = AuthManager.get(context)
+        if (trackedPathsBeforeTests == null) {
+            trackedPathsBeforeTests = auth.getTrackedRepoPaths()
+        }
+        auth.getTrackedRepoPaths().forEach { auth.removeTrackedRepoPath(it) }
+    }
+
+    /** Undoes every change these helpers made to the app's persisted settings. */
+    fun restoreAppState(context: Context) {
+        val auth = AuthManager.get(context)
+        cloneDirBeforeTests?.let { auth.setDefaultCloneDir(it) }
+        trackedPathsBeforeTests?.let { saved ->
+            auth.getTrackedRepoPaths().forEach { auth.removeTrackedRepoPath(it) }
+            saved.forEach { auth.addTrackedRepoPath(it) }
+        }
     }
 
     /** A repository with one commit, wired to a bare remote it is level with. */

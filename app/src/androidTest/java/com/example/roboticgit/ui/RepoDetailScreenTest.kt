@@ -52,6 +52,10 @@ class RepoDetailScreenTest {
     fun tearDown() {
         repos.close()
         workspace.deleteRecursively()
+        // The clone directory is persisted app state, not test state.
+        OnDeviceRepositories.restoreAppState(
+            InstrumentationRegistry.getInstrumentation().targetContext
+        )
     }
 
     private fun showScreen() {
