@@ -1,0 +1,155 @@
+#!/usr/bin/env bash
+#
+# Blocks a push that would publish credentials or private-only files.
+#
+# The policy this enforces: what leaves this machine must be safe to be public,
+# regardless of whether the remote repository is private. A private repo can be
+# made public later, is readable by anyone added to it, and is mirrored by
+# tooling that does not care about the setting.
+#
+# Install (once per clone):
+#     git config core.hooksPath .githooks
+#
+# Override for a push you have inspected yourself:
+#     SKIP_PUSH_GUARD=1 git push
+#
+set -uo pipefail
+
+if [ "${SKIP_PUSH_GUARD:-0}" = "1" ]; then
+    echo "pre-push: SKIP_PUSH_GUARD=1 -- guard bypassed by request." >&2
+    exit 0
+fi
+
+ZERO_SHA='0000000000000000000000000000000000000000'
+findings=""
+
+note() {
+    findings="${findings}$1"$'\n'
+}
+
+# --- What to look for -------------------------------------------------------
+#
+# Only high-confidence patterns. A guard that fires on ordinary code gets
+# bypassed reflexively, and then it is not a guard at all.
+
+# Provider-issued tokens, matched on their documented prefixes and lengths.
+SECRET_PATTERNS=(
+    'ghp_[A-Za-z0-9]{36}'                 # GitHub personal access token (classic)
+    'gh[osur]_[A-Za-z0-9]{36}'            # GitHub OAuth / server / user / refresh
+    'github_pat_[A-Za-z0-9_]{60,}'        # GitHub fine-grained PAT
+    'glpat-[A-Za-z0-9_-]{20,}'            # GitLab PAT
+    'xox[baprs]-[A-Za-z0-9-]{10,}'        # Slack
+    'AKIA[0-9A-Z]{16}'                    # AWS access key id
+    'AIza[0-9A-Za-z_-]{35}'               # Google API key
+    '-----BEGIN [A-Z ]*PRIVATE KEY-----'  # Any PEM private key
+)
+
+# Files that hold machine-local or signing material and must never be published.
+SENSITIVE_PATHS=(
+    'local.properties'
+    'keystore.properties'
+    'signing.properties'
+    '.env'
+    '.env.'
+    '.jks'
+    '.keystore'
+    '.p12'
+    '.pfx'
+    '.pem'
+    'id_rsa'
+    'id_ed25519'
+)
+
+matches_sensitive_path() {
+    local path="$1"
+    local needle
+    for needle in "${SENSITIVE_PATHS[@]}"; do
+        case "$path" in
+            *"$needle"*) return 0 ;;
+        esac
+    done
+    return 1
+}
+
+scan_range() {
+    local range="$1"
+
+    # Added lines only: removing a leaked secret must not block the very commit
+    # that removes it.
+    local added
+    added="$(git diff --unified=0 "$range" -- 2>/dev/null | grep '^+' | grep -v '^+++' || true)"
+
+    if [ -n "$added" ]; then
+        local pattern
+        for pattern in "${SECRET_PATTERNS[@]}"; do
+            local hit
+            # -e is required: one pattern starts with '-' and would otherwise be
+            # read as a grep option.
+            hit="$(printf '%s\n' "$added" | grep -nEo -e "$pattern" | head -3 || true)"
+            if [ -n "$hit" ]; then
+                note "  credential-shaped string matching /${pattern}/:"
+                # Fed by here-string, not a pipe: a pipeline runs the loop in a
+                # subshell and the appended findings would be discarded.
+                while IFS= read -r line; do
+                    # Only a prefix is echoed; reprinting the secret in full
+                    # would defeat the purpose.
+                    note "      ${line:0:20}…"
+                done <<< "$hit"
+            fi
+        done
+    fi
+
+    local changed
+    changed="$(git diff --name-only "$range" -- 2>/dev/null || true)"
+    if [ -n "$changed" ]; then
+        local path
+        while IFS= read -r path; do
+            [ -z "$path" ] && continue
+            if matches_sensitive_path "$path"; then
+                note "  file that must stay local: $path"
+            fi
+        done <<< "$changed"
+    fi
+}
+
+# --- Walk what is actually being pushed -------------------------------------
+
+while read -r _local_ref local_sha _remote_ref remote_sha; do
+    # Branch deletion: nothing is being published.
+    [ "$local_sha" = "$ZERO_SHA" ] && continue
+
+    if [ "$remote_sha" = "$ZERO_SHA" ]; then
+        # New branch on the remote. Limit the scan to commits the remote does
+        # not already have, rather than the whole history.
+        base="$(git rev-list --max-count=1 "$local_sha" --not --remotes 2>/dev/null || true)"
+        if [ -z "$base" ]; then
+            continue
+        fi
+        range="$(git merge-base "$local_sha" HEAD@{upstream} 2>/dev/null || echo "")"
+        if [ -n "$range" ]; then
+            scan_range "${range}..${local_sha}"
+        else
+            # No shared history to anchor on; scan the new commits individually.
+            for sha in $(git rev-list "$local_sha" --not --remotes); do
+                scan_range "${sha}^!"
+            done
+        fi
+    else
+        scan_range "${remote_sha}..${local_sha}"
+    fi
+done
+
+if [ -n "$findings" ]; then
+    {
+        echo
+        echo "pre-push: refusing to push -- this would publish content that should stay local."
+        echo
+        printf '%s' "$findings"
+        echo "Rewrite the history that introduced it, or set SKIP_PUSH_GUARD=1 if this is a"
+        echo "false positive you have checked yourself."
+        echo
+    } >&2
+    exit 1
+fi
+
+exit 0
