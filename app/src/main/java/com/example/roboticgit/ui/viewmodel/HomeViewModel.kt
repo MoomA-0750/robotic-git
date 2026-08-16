@@ -15,7 +15,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -36,7 +38,7 @@ class HomeViewModel(
     private val _remoteRepos = MutableStateFlow<List<RemoteRepo>>(emptyList())
     val remoteRepos: StateFlow<List<RemoteRepo>> = _remoteRepos.asStateFlow()
 
-    private val _accounts = MutableStateFlow<List<Account>>(authManager.getAccounts())
+    private val _accounts = MutableStateFlow<List<Account>>(emptyList())
     val accounts: StateFlow<List<Account>> = _accounts.asStateFlow()
 
     private val _selectedAccount = MutableStateFlow<Account?>(null)
@@ -61,8 +63,9 @@ class HomeViewModel(
 
     init {
         loadRepositories()
-        _selectedAccount.value = _accounts.value.firstOrNull()
-        fetchRemoteRepositories()
+        // Accounts live behind the Android Keystore; reading them synchronously
+        // here put a couple of hundred milliseconds in front of the first frame.
+        refreshAccounts()
     }
 
     fun toggleRepoSelection(repoName: String) {
@@ -80,10 +83,13 @@ class HomeViewModel(
     }
 
     fun refreshAccounts() {
-        val list = authManager.getAccounts()
-        _accounts.value = list
-        if (_selectedAccount.value == null || !list.any { it.id == _selectedAccount.value?.id }) {
-            _selectedAccount.value = list.firstOrNull()
+        viewModelScope.launch {
+            val list = withContext(Dispatchers.IO) { authManager.getAccounts() }
+            _accounts.value = list
+            if (_selectedAccount.value == null || !list.any { it.id == _selectedAccount.value?.id }) {
+                _selectedAccount.value = list.firstOrNull()
+            }
+            fetchRemoteRepositories()
         }
     }
 
@@ -111,6 +117,11 @@ class HomeViewModel(
         viewModelScope.launch {
             val file = File(path)
             if (file.exists() && file.isDirectory && File(file, ".git").exists()) {
+                // The repo was created elsewhere, so its config still reflects that
+                // filesystem. On /sdcard the executable bit cannot be stored and
+                // every executable tracked file would show up as permanently
+                // modified until core.fileMode is turned off.
+                gitManager.alignConfigWithFilesystem(file)
                 authManager.addTrackedRepoPath(file.absolutePath)
                 loadRepositories()
             }

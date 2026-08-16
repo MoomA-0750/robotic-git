@@ -58,7 +58,7 @@ fun HomeScreen(
     onRepoClick: (String) -> Unit
 ) {
     val context = LocalContext.current
-    val authManager = remember { AuthManager(context) }
+    val authManager = remember { AuthManager.get(context) }
     
     val viewModel: HomeViewModel = viewModel(
         factory = HomeViewModelFactory(authManager)

@@ -2,6 +2,7 @@ package com.example.roboticgit.ui.screens
 
 import androidx.compose.animation.*
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -30,7 +31,9 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
@@ -58,6 +61,7 @@ import com.example.roboticgit.data.AuthManager
 import com.example.roboticgit.data.CommitChange
 import com.example.roboticgit.data.RepoFile
 import com.example.roboticgit.data.model.BranchInfo
+import com.example.roboticgit.data.model.CommitSummary
 import com.example.roboticgit.data.model.ConflictFile
 import com.example.roboticgit.data.model.FileState
 import com.example.roboticgit.data.model.FileStatus
@@ -70,7 +74,6 @@ import com.example.roboticgit.ui.viewmodel.RepoDetailUiState
 import com.example.roboticgit.ui.viewmodel.RepoDetailViewModel
 import com.example.roboticgit.ui.viewmodel.RepoDetailViewModelFactory
 import kotlinx.coroutines.launch
-import org.eclipse.jgit.revwalk.RevCommit
 import java.io.File
 import java.util.Date
 
@@ -82,14 +85,30 @@ fun RepoDetailScreen(
     showBackButton: Boolean = true
 ) {
     val context = LocalContext.current
-    val authManager = remember { AuthManager(context) }
+    val authManager = remember { AuthManager.get(context) }
     val rootDir = remember { File(authManager.getDefaultCloneDir()) }
+    // EncryptedSharedPreferences read; must not happen on every recomposition.
+    val editorFontSize = remember { authManager.getEditorFontSize().toFloat() }
 
+    // key = repoName so switching repos in the two-pane layout gets a fresh
+    // ViewModel instead of reusing the one bound to the first repo opened.
     val viewModel: RepoDetailViewModel = viewModel(
+        key = repoName,
         factory = RepoDetailViewModelFactory(authManager, rootDir, repoName)
     )
     val uiState by viewModel.uiState.collectAsState()
     val errorMessage by viewModel.errorMessage.collectAsState()
+    val statusMessage by viewModel.statusMessage.collectAsState()
+    val isRefreshing by viewModel.isRefreshing.collectAsState()
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    // Successes are transient news, not something to interrupt the user with.
+    LaunchedEffect(statusMessage) {
+        statusMessage?.let {
+            snackbarHostState.showSnackbar(it)
+            viewModel.clearStatusMessage()
+        }
+    }
 
     var commitMessage by remember { mutableStateOf("") }
     val pagerState = rememberPagerState(pageCount = { 4 })
@@ -169,6 +188,7 @@ fun RepoDetailScreen(
                 )
             }
         },
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         floatingActionButton = {
             if (pagerState.currentPage == 3) {
                 FloatingActionButton(onClick = { showCreateBranchDialog = true }) {
@@ -178,6 +198,12 @@ fun RepoDetailScreen(
         }
     ) { paddingValues ->
         Column(modifier = Modifier.padding(paddingValues).fillMaxSize()) {
+            // A refresh over existing content no longer blanks the screen, so it
+            // needs some sign that something is happening.
+            if (isRefreshing) {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            }
+
             // Merge in progress banner
             if (isMerging) {
                 MergeBanner(
@@ -265,7 +291,8 @@ fun RepoDetailScreen(
                                 2 -> HistoryView(
                                     commits = state.commits,
                                     getGravatarUrl = viewModel::getGravatarUrl,
-                                    viewModel = viewModel
+                                    viewModel = viewModel,
+                                    hasMoreCommits = state.hasMoreCommits
                                 )
                                 3 -> BranchesView(
                                     branches = state.branches,
@@ -361,7 +388,7 @@ fun RepoDetailScreen(
                     editingPath = null
                 },
                 onDismiss = { editingPath = null },
-                fontSize = authManager.getEditorFontSize().toFloat()
+                fontSize = editorFontSize
             )
         }
 
@@ -761,9 +788,10 @@ fun FloatingCommitToolbar(
             )
         )
 
-        // Commit FAB
+        // Commit FAB. FloatingActionButton has no `enabled` parameter, so without
+        // guarding onClick the button stays fully clickable while looking disabled.
         FloatingActionButton(
-            onClick = onCommit,
+            onClick = { if (enabled) onCommit() },
             containerColor = if (enabled)
                 MaterialTheme.colorScheme.primaryContainer
             else
@@ -888,11 +916,15 @@ fun DiffDialog(
                 if (diffText == null) {
                     CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
                 } else {
-                    Column(
-                        modifier = Modifier
-                            .verticalScroll(rememberScrollState())
-                    ) {
-                        diffText.split("\n").forEach { line ->
+                    // Splitting on every recomposition would redo this for a diff
+                    // that has not changed.
+                    val lines = remember(diffText) { diffText.split("\n") }
+
+                    // LazyColumn, not Column + verticalScroll: the old version
+                    // composed a Text node for every line up front, which froze the
+                    // main thread for over seven seconds on a five-thousand-line diff.
+                    LazyColumn(modifier = Modifier.fillMaxWidth()) {
+                        items(lines) { line ->
                             val bgColor = when {
                                 line.startsWith("+") -> extendedColors.diffAddedBackground
                                 line.startsWith("-") -> extendedColors.diffRemovedBackground
@@ -1014,8 +1046,6 @@ fun CodeEditor(
     val gutterBackground = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
     val gutterTextColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
     val guideColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f)
-    val whitespaceColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.2f)
-    val whitespaceTransformation = remember(whitespaceColor) { WhitespaceVisualTransformation(whitespaceColor) }
 
     // Pinch gesture modifier - smooth continuous zoom with stabilization
     val pinchModifier = if (onFontSizeChange != null) {
@@ -1140,68 +1170,26 @@ fun CodeEditor(
                     color = MaterialTheme.colorScheme.onSurface
                 ),
                 cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                onTextLayout = { textLayoutResult = it },
-                visualTransformation = whitespaceTransformation
+                onTextLayout = { textLayoutResult = it }
+                // No VisualTransformation here on purpose. Rendering whitespace as
+                // dots and arrows meant rebuilding the entire AnnotatedString one
+                // character at a time on every keystroke, and the accompanying
+                // OffsetMapping walked the text from the start for each cursor
+                // query. The indent guides drawn on the Canvas above give most of
+                // the same benefit for a fraction of the cost.
             )
         }
     }
 }
 
-class WhitespaceVisualTransformation(
-    private val whitespaceColor: Color
-) : VisualTransformation {
-    override fun filter(text: AnnotatedString): TransformedText {
-        val builder = AnnotatedString.Builder()
-
-        for (char in text.text) {
-            when (char) {
-                ' ' -> builder.append(AnnotatedString(
-                    "·",
-                    SpanStyle(color = whitespaceColor)
-                ))
-                '\t' -> builder.append(AnnotatedString(
-                    "→   ",
-                    SpanStyle(color = whitespaceColor)
-                ))
-                else -> builder.append(char.toString())
-            }
-        }
-
-        val offsetMapping = object : OffsetMapping {
-            override fun originalToTransformed(offset: Int): Int {
-                var transformedOffset = 0
-                for (i in 0 until offset.coerceAtMost(text.text.length)) {
-                    if (text.text[i] == '\t') transformedOffset += 4 else transformedOffset++
-                }
-                return transformedOffset
-            }
-
-            override fun transformedToOriginal(offset: Int): Int {
-                var currentTransformed = 0
-                var originalOffset = 0
-                while (currentTransformed < offset && originalOffset < text.text.length) {
-                    if (text.text[originalOffset] == '\t') {
-                        currentTransformed += 4
-                    } else {
-                        currentTransformed++
-                    }
-                    originalOffset++
-                }
-                return originalOffset.coerceAtMost(text.text.length)
-            }
-        }
-
-        return TransformedText(builder.toAnnotatedString(), offsetMapping)
-    }
-}
-
 @Composable
 fun HistoryView(
-    commits: List<RevCommit>,
+    commits: List<CommitSummary>,
     getGravatarUrl: (String) -> String,
-    viewModel: RepoDetailViewModel
+    viewModel: RepoDetailViewModel,
+    hasMoreCommits: Boolean = false
 ) {
-    var selectedCommit by remember { mutableStateOf<RevCommit?>(null) }
+    var selectedCommit by remember { mutableStateOf<CommitSummary?>(null) }
     var commitChanges by remember { mutableStateOf<List<CommitChange>>(emptyList()) }
     var isLoadingChanges by remember { mutableStateOf(false) }
     var selectedFileDiff by remember { mutableStateOf<String?>(null) }
@@ -1223,7 +1211,7 @@ fun HistoryView(
                     .fillMaxWidth()
             ) {
                 items(commits) { commit ->
-                    val isSelected = selectedCommit?.name == commit.name
+                    val isSelected = selectedCommit?.id == commit.id
                     CommitItem(
                         commit = commit,
                         getGravatarUrl = getGravatarUrl,
@@ -1240,13 +1228,25 @@ fun HistoryView(
                                 selectedFilePath = null
                                 isLoadingChanges = true
                                 scope.launch {
-                                    commitChanges = viewModel.getCommitChanges(commit)
+                                    commitChanges = viewModel.getCommitChanges(commit.id)
                                     isLoadingChanges = false
                                 }
                             }
                         }
                     )
                     HorizontalDivider()
+                }
+
+                // Say so rather than letting the list just stop.
+                if (hasMoreCommits) {
+                    item {
+                        Text(
+                            text = "Showing the ${commits.size} most recent commits.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.fillMaxWidth().padding(16.dp)
+                        )
+                    }
                 }
             }
 
@@ -1296,7 +1296,7 @@ fun HistoryView(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             AsyncImage(
-                                model = getGravatarUrl(commit.authorIdent.emailAddress),
+                                model = getGravatarUrl(commit.authorEmail),
                                 contentDescription = null,
                                 modifier = Modifier
                                     .size(36.dp)
@@ -1311,7 +1311,7 @@ fun HistoryView(
                                     overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                                 )
                                 Text(
-                                    text = "${commit.authorIdent.name} · ${Date(commit.commitTime * 1000L)}",
+                                    text = "${commit.authorName} · ${Date(commit.timestamp)}",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -1356,7 +1356,7 @@ fun HistoryView(
                                     )
                                     Spacer(Modifier.width(6.dp))
                                     Text(
-                                        text = commit.name,
+                                        text = commit.id,
                                         style = MaterialTheme.typography.labelSmall,
                                         fontFamily = FontFamily.Monospace,
                                         color = MaterialTheme.colorScheme.primary,
@@ -1368,7 +1368,7 @@ fun HistoryView(
                         }
 
                         // Full commit message (if different from short message)
-                        if (commit.fullMessage.trim() != commit.shortMessage.trim()) {
+                        if (commit.hasBody) {
                             item {
                                 Spacer(modifier = Modifier.height(8.dp))
                                 Text(
@@ -1435,7 +1435,7 @@ fun HistoryView(
                                             selectedFileDiff = null
                                             isLoadingDiff = true
                                             scope.launch {
-                                                selectedFileDiff = viewModel.getCommitFileDiff(commit, path)
+                                                selectedFileDiff = viewModel.getCommitFileDiff(commit.id, path)
                                                 isLoadingDiff = false
                                             }
                                         }
@@ -1731,16 +1731,16 @@ private fun FileTreeLeaf(
 
 @Composable
 fun CommitItem(
-    commit: RevCommit,
+    commit: CommitSummary,
     getGravatarUrl: (String) -> String,
     isSelected: Boolean = false,
     onClick: () -> Unit
 ) {
-    val email = commit.authorIdent.emailAddress
+    val email = commit.authorEmail
     ListItem(
         headlineContent = { Text(commit.shortMessage, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis) },
         supportingContent = {
-            Text("${commit.authorIdent.name} · ${Date(commit.commitTime * 1000L)}")
+            Text("${commit.authorName} · ${Date(commit.timestamp)}")
         },
         leadingContent = {
             AsyncImage(
@@ -1759,7 +1759,7 @@ fun CommitItem(
             ),
         trailingContent = {
             Text(
-                text = commit.name.take(7),
+                text = commit.abbreviatedId,
                 style = MaterialTheme.typography.labelSmall,
                 fontFamily = FontFamily.Monospace,
                 color = MaterialTheme.colorScheme.outline
@@ -1895,6 +1895,55 @@ private fun parseSideBySideDiff(diffText: String): List<SideBySideLine> {
     return result
 }
 
+/** How tall the inline diff preview may grow before it scrolls on its own. */
+private val DIFF_PREVIEW_MAX_HEIGHT = 360.dp
+
+/**
+ * One row of the unified (narrow-screen) rendering, already flattened.
+ *
+ * The side-by-side model pairs an old and a new line per entry, and the unified
+ * view expands each pair into one or two rows. Doing that expansion up front
+ * gives LazyColumn a flat list it can index into, which is what lets it skip
+ * composing rows that are off screen.
+ */
+private data class UnifiedDiffRow(
+    val oldLineNumber: Int?,
+    val newLineNumber: Int?,
+    val content: String,
+    val prefix: String,
+    val type: DiffLineType
+)
+
+private fun flattenToUnifiedRows(lines: List<SideBySideLine>): List<UnifiedDiffRow> {
+    val rows = mutableListOf<UnifiedDiffRow>()
+    lines.forEach { line ->
+        if (line.isHunkHeader) {
+            rows.add(
+                UnifiedDiffRow(null, null, line.hunkText, "", DiffLineType.HUNK_HEADER)
+            )
+            return@forEach
+        }
+        line.left?.takeIf { it.type == DiffLineType.REMOVED }?.let {
+            rows.add(UnifiedDiffRow(it.oldLineNumber, null, it.content, "-", DiffLineType.REMOVED))
+        }
+        line.right?.takeIf { it.type == DiffLineType.ADDED }?.let {
+            rows.add(UnifiedDiffRow(null, it.newLineNumber, it.content, "+", DiffLineType.ADDED))
+        }
+        line.left?.takeIf { it.type == DiffLineType.CONTEXT }?.let {
+            rows.add(
+                UnifiedDiffRow(
+                    it.oldLineNumber,
+                    line.right?.newLineNumber,
+                    it.content,
+                    " ",
+                    DiffLineType.CONTEXT
+                )
+            )
+        }
+    }
+    return rows
+}
+
 @Composable
 fun SideBySideDiffView(
     diffText: String,
@@ -1931,271 +1980,218 @@ fun SideBySideDiffView(
         (maxLineNum.toString().length * 8 + 12).coerceAtLeast(32)
     }
 
+    // Resolved once here rather than per row: MaterialTheme lookups inside a
+    // LazyColumn item run again for every row that scrolls into view.
     val gutterBg = MaterialTheme.colorScheme.surfaceContainerHigh
     val gutterTextColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
     val separatorColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
     val hunkBg = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
     val hunkTextColor = MaterialTheme.colorScheme.primary
+    val contextTextColor = MaterialTheme.colorScheme.onSurfaceVariant
+    val separatorWidthPx = with(LocalDensity.current) { 2.dp.toPx() }
 
     BoxWithConstraints(modifier = modifier) {
         val isSideBySide = maxWidth >= 600.dp
 
-        if (isSideBySide) {
-            // === Side-by-side mode ===
-            // Use IntrinsicSize.Min on the parent Row so the center divider
-            // can use fillMaxHeight() correctly
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(IntrinsicSize.Min)
-            ) {
-                val leftScrollState = rememberScrollState()
-                val rightScrollState = rememberScrollState()
+        // Shared across every row so the two panes each scroll as a unit.
+        val leftScrollState = rememberScrollState()
+        val rightScrollState = rememberScrollState()
 
-                // Left pane (old file) — no verticalScroll (parent LazyColumn handles it)
-                Column(
-                    modifier = Modifier.weight(1f)
-                ) {
-                    // Header
-                    Surface(
-                        color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.3f),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text(
-                            text = "  ← Original",
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                        )
-                    }
+        // LazyListScope is not a composable scope, so this has to be hoisted.
+        val unifiedRows = remember(parsedLines) { flattenToUnifiedRows(parsedLines) }
 
-                    parsedLines.forEach { sideBySideLine ->
-                        if (sideBySideLine.isHunkHeader) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .background(hunkBg)
-                                    .padding(horizontal = 4.dp, vertical = 2.dp)
-                            ) {
-                                Text(
-                                    text = sideBySideLine.hunkText,
-                                    fontSize = 10.sp,
-                                    fontFamily = FontFamily.Monospace,
-                                    color = hunkTextColor,
-                                    maxLines = 1
-                                )
-                            }
-                        } else {
-                            val leftLine = sideBySideLine.left
-                            val bgColor = when (leftLine?.type) {
-                                DiffLineType.REMOVED -> extendedColors.diffRemovedBackground
-                                else -> Color.Transparent
-                            }
-                            val textColor = when (leftLine?.type) {
-                                DiffLineType.REMOVED -> extendedColors.diffRemovedText
-                                else -> MaterialTheme.colorScheme.onSurfaceVariant
-                            }
-
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .background(bgColor)
-                                    .horizontalScroll(leftScrollState),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                // Line number gutter
-                                Box(
-                                    modifier = Modifier
-                                        .width(gutterWidth.dp)
-                                        .background(gutterBg),
-                                    contentAlignment = Alignment.CenterEnd
-                                ) {
-                                    Text(
-                                        text = leftLine?.oldLineNumber?.toString() ?: "",
-                                        fontSize = 10.sp,
-                                        fontFamily = FontFamily.Monospace,
-                                        color = gutterTextColor,
-                                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
-                                    )
-                                }
-                                // Content
-                                Text(
-                                    text = leftLine?.content ?: "",
-                                    color = if (leftLine != null) textColor else Color.Transparent,
-                                    fontSize = 11.sp,
-                                    fontFamily = FontFamily.Monospace,
-                                    modifier = Modifier
-                                        .padding(horizontal = 4.dp, vertical = 1.dp),
-                                    softWrap = false,
-                                    maxLines = 1
-                                )
-                            }
-                        }
-                    }
-                }
-
-                // Center divider — works because parent Row has height(IntrinsicSize.Min)
-                Spacer(
-                    modifier = Modifier
-                        .width(2.dp)
-                        .fillMaxHeight()
-                        .background(separatorColor)
-                )
-
-                // Right pane (new file) — no verticalScroll
-                Column(
-                    modifier = Modifier.weight(1f)
-                ) {
-                    // Header
-                    Surface(
-                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text(
-                            text = "  → Modified",
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                        )
-                    }
-
-                    parsedLines.forEach { sideBySideLine ->
-                        if (sideBySideLine.isHunkHeader) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .background(hunkBg)
-                                    .padding(horizontal = 4.dp, vertical = 2.dp)
-                            ) {
-                                Text(
-                                    text = sideBySideLine.hunkText,
-                                    fontSize = 10.sp,
-                                    fontFamily = FontFamily.Monospace,
-                                    color = hunkTextColor,
-                                    maxLines = 1
-                                )
-                            }
-                        } else {
-                            val rightLine = sideBySideLine.right
-                            val bgColor = when (rightLine?.type) {
-                                DiffLineType.ADDED -> extendedColors.diffAddedBackground
-                                else -> Color.Transparent
-                            }
-                            val textColor = when (rightLine?.type) {
-                                DiffLineType.ADDED -> extendedColors.diffAddedText
-                                else -> MaterialTheme.colorScheme.onSurfaceVariant
-                            }
-
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .background(bgColor)
-                                    .horizontalScroll(rightScrollState),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .width(gutterWidth.dp)
-                                        .background(gutterBg),
-                                    contentAlignment = Alignment.CenterEnd
-                                ) {
-                                    Text(
-                                        text = rightLine?.newLineNumber?.toString() ?: "",
-                                        fontSize = 10.sp,
-                                        fontFamily = FontFamily.Monospace,
-                                        color = gutterTextColor,
-                                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
-                                    )
-                                }
-                                Text(
-                                    text = rightLine?.content ?: "",
-                                    color = if (rightLine != null) textColor else Color.Transparent,
-                                    fontSize = 11.sp,
-                                    fontFamily = FontFamily.Monospace,
-                                    modifier = Modifier
-                                        .padding(horizontal = 4.dp, vertical = 1.dp),
-                                    softWrap = false,
-                                    maxLines = 1
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        } else {
-            // === Unified mode (narrow screen) with line numbers ===
-            // No verticalScroll — parent LazyColumn handles scrolling
-            Column(modifier = Modifier.fillMaxWidth()) {
-                parsedLines.forEach { sideBySideLine ->
-                    if (sideBySideLine.isHunkHeader) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .background(hunkBg)
-                                .padding(horizontal = 4.dp, vertical = 2.dp)
+        // A bounded height turns this into its own scroll region, which is what
+        // lets it be lazy at all: an unbounded LazyColumn cannot virtualise.
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = DIFF_PREVIEW_MAX_HEIGHT)
+        ) {
+            if (isSideBySide) {
+                item(key = "header") {
+                    Row(modifier = Modifier.fillMaxWidth()) {
+                        Surface(
+                            color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.3f),
+                            modifier = Modifier.weight(1f)
                         ) {
                             Text(
-                                text = sideBySideLine.hunkText,
-                                fontSize = 10.sp,
-                                fontFamily = FontFamily.Monospace,
-                                color = hunkTextColor,
-                                maxLines = 1
+                                text = "  ← Original",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                             )
                         }
+                        Surface(
+                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text(
+                                text = "  → Modified",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            )
+                        }
+                    }
+                }
+
+                items(parsedLines.size) { index ->
+                    val line = parsedLines[index]
+                    if (line.isHunkHeader) {
+                        HunkHeaderRow(line.hunkText, hunkBg, hunkTextColor)
                     } else {
-                        // Show removed lines
-                        sideBySideLine.left?.let { leftLine ->
-                            if (leftLine.type == DiffLineType.REMOVED) {
-                                UnifiedDiffLineRow(
-                                    oldLineNum = leftLine.oldLineNumber,
-                                    newLineNum = null,
-                                    content = leftLine.content,
-                                    prefix = "-",
-                                    bgColor = extendedColors.diffRemovedBackground,
-                                    textColor = extendedColors.diffRemovedText,
-                                    gutterBg = gutterBg,
-                                    gutterTextColor = gutterTextColor,
-                                    gutterWidth = gutterWidth
-                                )
-                            }
-                        }
-                        // Show added lines
-                        sideBySideLine.right?.let { rightLine ->
-                            if (rightLine.type == DiffLineType.ADDED) {
-                                UnifiedDiffLineRow(
-                                    oldLineNum = null,
-                                    newLineNum = rightLine.newLineNumber,
-                                    content = rightLine.content,
-                                    prefix = "+",
-                                    bgColor = extendedColors.diffAddedBackground,
-                                    textColor = extendedColors.diffAddedText,
-                                    gutterBg = gutterBg,
-                                    gutterTextColor = gutterTextColor,
-                                    gutterWidth = gutterWidth
-                                )
-                            }
-                        }
-                        // Context lines (shown once)
-                        if (sideBySideLine.left?.type == DiffLineType.CONTEXT) {
-                            val ctxLine = sideBySideLine.left
-                            UnifiedDiffLineRow(
-                                oldLineNum = ctxLine.oldLineNumber,
-                                newLineNum = sideBySideLine.right?.newLineNumber,
-                                content = ctxLine.content,
-                                prefix = " ",
-                                bgColor = Color.Transparent,
-                                textColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                        // Both halves live in one row, so they stay aligned without
+                        // the parent needing height(IntrinsicSize.Min) -- which used
+                        // to force a second measure pass over the entire diff.
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            DiffPaneCell(
+                                content = line.left?.content,
+                                lineNumber = line.left?.oldLineNumber,
+                                bgColor = if (line.left?.type == DiffLineType.REMOVED) {
+                                    extendedColors.diffRemovedBackground
+                                } else {
+                                    Color.Transparent
+                                },
+                                textColor = if (line.left?.type == DiffLineType.REMOVED) {
+                                    extendedColors.diffRemovedText
+                                } else {
+                                    contextTextColor
+                                },
+                                gutterWidth = gutterWidth,
                                 gutterBg = gutterBg,
                                 gutterTextColor = gutterTextColor,
-                                gutterWidth = gutterWidth
+                                scrollState = leftScrollState,
+                                modifier = Modifier.weight(1f)
+                            )
+                            DiffPaneCell(
+                                content = line.right?.content,
+                                lineNumber = line.right?.newLineNumber,
+                                bgColor = if (line.right?.type == DiffLineType.ADDED) {
+                                    extendedColors.diffAddedBackground
+                                } else {
+                                    Color.Transparent
+                                },
+                                textColor = if (line.right?.type == DiffLineType.ADDED) {
+                                    extendedColors.diffAddedText
+                                } else {
+                                    contextTextColor
+                                },
+                                gutterWidth = gutterWidth,
+                                gutterBg = gutterBg,
+                                gutterTextColor = gutterTextColor,
+                                scrollState = rightScrollState,
+                                // The centre divider, drawn over the cell's own
+                                // background so it does not depend on the row
+                                // reporting an intrinsic height.
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .drawWithContent {
+                                        drawContent()
+                                        drawRect(
+                                            color = separatorColor,
+                                            size = Size(separatorWidthPx, size.height)
+                                        )
+                                    }
                             )
                         }
+                    }
+                }
+            } else {
+                items(unifiedRows.size) { index ->
+                    val row = unifiedRows[index]
+                    when (row.type) {
+                        DiffLineType.HUNK_HEADER -> HunkHeaderRow(row.content, hunkBg, hunkTextColor)
+                        else -> UnifiedDiffLineRow(
+                            oldLineNum = row.oldLineNumber,
+                            newLineNum = row.newLineNumber,
+                            content = row.content,
+                            prefix = row.prefix,
+                            bgColor = when (row.type) {
+                                DiffLineType.ADDED -> extendedColors.diffAddedBackground
+                                DiffLineType.REMOVED -> extendedColors.diffRemovedBackground
+                                else -> Color.Transparent
+                            },
+                            textColor = when (row.type) {
+                                DiffLineType.ADDED -> extendedColors.diffAddedText
+                                DiffLineType.REMOVED -> extendedColors.diffRemovedText
+                                else -> contextTextColor
+                            },
+                            gutterBg = gutterBg,
+                            gutterTextColor = gutterTextColor,
+                            gutterWidth = gutterWidth
+                        )
                     }
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun HunkHeaderRow(text: String, background: Color, textColor: Color) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(background)
+            .padding(horizontal = 4.dp, vertical = 2.dp)
+    ) {
+        Text(
+            text = text,
+            fontSize = 10.sp,
+            fontFamily = FontFamily.Monospace,
+            color = textColor,
+            maxLines = 1
+        )
+    }
+}
+
+/** One side of a side-by-side row: line-number gutter plus content. */
+@Composable
+private fun DiffPaneCell(
+    content: String?,
+    lineNumber: Int?,
+    bgColor: Color,
+    textColor: Color,
+    gutterWidth: Int,
+    gutterBg: Color,
+    gutterTextColor: Color,
+    scrollState: ScrollState,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier
+            .background(bgColor)
+            .horizontalScroll(scrollState),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .width(gutterWidth.dp)
+                .background(gutterBg),
+            contentAlignment = Alignment.CenterEnd
+        ) {
+            Text(
+                text = lineNumber?.toString() ?: "",
+                fontSize = 10.sp,
+                fontFamily = FontFamily.Monospace,
+                color = gutterTextColor,
+                modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+            )
+        }
+        Text(
+            text = content ?: "",
+            color = if (content != null) textColor else Color.Transparent,
+            fontSize = 11.sp,
+            fontFamily = FontFamily.Monospace,
+            modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
+            softWrap = false,
+            maxLines = 1
+        )
     }
 }
 

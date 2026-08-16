@@ -30,14 +30,13 @@ class MainActivity : ComponentActivity() {
     @OptIn(ExperimentalMaterial3WindowSizeClassApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        
+
         enableEdgeToEdge()
 
-        val authManager = AuthManager(this)
+        val authManager = AuthManager.get(this)
         settingsViewModel = ViewModelProvider(this, SettingsViewModelFactory(authManager))[SettingsViewModel::class.java]
 
         checkStoragePermission()
-        handleIntent(intent)
 
         setContent {
             val themeMode by settingsViewModel.themeMode.collectAsState()
@@ -60,21 +59,6 @@ class MainActivity : ComponentActivity() {
                     widthSizeClass = windowSizeClass.widthSizeClass,
                     settingsViewModel = settingsViewModel
                 )
-            }
-        }
-    }
-
-    override fun onNewIntent(intent: Intent?) {
-        super.onNewIntent(intent)
-        intent?.let { handleIntent(it) }
-    }
-
-    private fun handleIntent(intent: Intent) {
-        val data: Uri? = intent.data
-        if (data != null && data.toString().startsWith("roboticgit://oauth")) {
-            val code = data.getQueryParameter("code")
-            if (code != null) {
-                settingsViewModel.handleOAuthCode(code)
             }
         }
     }

@@ -1,15 +1,7 @@
-import java.util.Properties
-
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.jetbrains.kotlin.android)
     alias(libs.plugins.kotlin.serialization)
-}
-
-val localProperties = Properties()
-val localPropertiesFile = rootProject.file("local.properties")
-if (localPropertiesFile.exists()) {
-    localProperties.load(localPropertiesFile.inputStream())
 }
 
 android {
@@ -27,10 +19,6 @@ android {
         vectorDrawables {
             useSupportLibrary = true
         }
-
-        // Add BuildConfig fields
-        buildConfigField("String", "GITHUB_CLIENT_ID", "\"${localProperties.getProperty("github.client.id") ?: ""}\"")
-        buildConfigField("String", "GITHUB_CLIENT_SECRET", "\"${localProperties.getProperty("github.client.secret") ?: ""}\"")
     }
 
     buildTypes {
@@ -43,15 +31,14 @@ android {
         }
     }
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_1_8
-        targetCompatibility = JavaVersion.VERSION_1_8
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions {
-        jvmTarget = "1.8"
+        jvmTarget = "17"
     }
     buildFeatures {
         compose = true
-        buildConfig = true
     }
     composeOptions {
         kotlinCompilerExtensionVersion = "1.5.1"

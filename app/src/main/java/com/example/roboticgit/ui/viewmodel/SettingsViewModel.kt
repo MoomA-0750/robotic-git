@@ -8,7 +8,6 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.example.roboticgit.data.AuthManager
 import com.example.roboticgit.data.GitHubApiService
-import com.example.roboticgit.data.GitHubOAuthConstants
 import com.example.roboticgit.data.model.Account
 import com.example.roboticgit.data.model.AccountType
 import com.example.roboticgit.data.model.AppFont
@@ -16,7 +15,9 @@ import com.example.roboticgit.data.model.ThemeMode
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import okhttp3.MediaType.Companion.toMediaType
 import retrofit2.Retrofit
@@ -32,7 +33,7 @@ sealed class ValidationStatus {
 
 class SettingsViewModel(private val authManager: AuthManager) : ViewModel() {
 
-    private val _accounts = MutableStateFlow(authManager.getAccounts())
+    private val _accounts = MutableStateFlow<List<Account>>(emptyList())
     val accounts: StateFlow<List<Account>> = _accounts.asStateFlow()
 
     private val _defaultCloneDir = MutableStateFlow(authManager.getDefaultCloneDir())
@@ -61,12 +62,28 @@ class SettingsViewModel(private val authManager: AuthManager) : ViewModel() {
 
     private val json = Json { ignoreUnknownKeys = true }
     
-    private val retrofit = Retrofit.Builder()
-        .baseUrl("https://api.github.com/")
-        .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
-        .build()
-    
-    private val service = retrofit.create(GitHubApiService::class.java)
+    // Built lazily: Retrofit's reflective proxy creation cost ~70 ms of the
+    // startup path, and it is only needed when an account is verified.
+    private val service: GitHubApiService by lazy {
+        Retrofit.Builder()
+            .baseUrl("https://api.github.com/")
+            .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
+            .build()
+            .create(GitHubApiService::class.java)
+    }
+
+    init {
+        // Reading accounts unlocks the Android Keystore, which costs a couple of
+        // hundred milliseconds. Nothing drawn on the startup path needs them, so
+        // it must not run before the first frame.
+        reloadAccounts()
+    }
+
+    private fun reloadAccounts() {
+        viewModelScope.launch {
+            _accounts.value = withContext(Dispatchers.IO) { authManager.getAccounts() }
+        }
+    }
 
     fun onDefaultCloneDirChange(newPath: String) {
         _defaultCloneDir.value = newPath
@@ -111,46 +128,6 @@ class SettingsViewModel(private val authManager: AuthManager) : ViewModel() {
         return "https://www.gravatar.com/avatar/$hash?d=identicon"
     }
 
-    fun startGitHubLogin(context: Context) {
-        val loginUrl = Uri.parse(GitHubOAuthConstants.AUTH_URL).buildUpon()
-            .appendQueryParameter("client_id", GitHubOAuthConstants.CLIENT_ID)
-            .appendQueryParameter("scope", GitHubOAuthConstants.SCOPES)
-            .appendQueryParameter("redirect_uri", GitHubOAuthConstants.REDIRECT_URI)
-            .build()
-            
-        val intent = Intent(Intent.ACTION_VIEW, loginUrl)
-        context.startActivity(intent)
-    }
-
-    fun handleOAuthCode(code: String) {
-        viewModelScope.launch {
-            _validationStatus.value = ValidationStatus.Loading
-            try {
-                val tokenResponse = service.getAccessToken(
-                    clientId = GitHubOAuthConstants.CLIENT_ID,
-                    clientSecret = GitHubOAuthConstants.CLIENT_SECRET,
-                    code = code,
-                    redirectUri = GitHubOAuthConstants.REDIRECT_URI
-                )
-                
-                val token = tokenResponse.accessToken
-                val user = service.getUser("Bearer $token")
-                
-                val account = Account(
-                    name = user.login,
-                    type = AccountType.GITHUB,
-                    token = token,
-                    avatarUrl = user.avatarUrl
-                )
-                authManager.addAccount(account)
-                _accounts.value = authManager.getAccounts()
-                _validationStatus.value = ValidationStatus.Success
-            } catch (e: Exception) {
-                _validationStatus.value = ValidationStatus.Error(e.message ?: "OAuth failed")
-            }
-        }
-    }
-
     fun addGitHubAccountManual(token: String) {
         viewModelScope.launch {
             _validationStatus.value = ValidationStatus.Loading
@@ -163,7 +140,7 @@ class SettingsViewModel(private val authManager: AuthManager) : ViewModel() {
                     avatarUrl = user.avatarUrl
                 )
                 authManager.addAccount(account)
-                _accounts.value = authManager.getAccounts()
+                reloadAccounts()
                 _validationStatus.value = ValidationStatus.Success
             } catch (e: Exception) {
                 _validationStatus.value = ValidationStatus.Error(e.message ?: "Invalid token")
@@ -184,7 +161,7 @@ class SettingsViewModel(private val authManager: AuthManager) : ViewModel() {
                     baseUrl = url
                 )
                 authManager.addAccount(account)
-                _accounts.value = authManager.getAccounts()
+                reloadAccounts()
                 _validationStatus.value = ValidationStatus.Success
             } catch (e: Exception) {
                 _validationStatus.value = ValidationStatus.Error(e.message ?: "Failed to add account")
@@ -194,7 +171,7 @@ class SettingsViewModel(private val authManager: AuthManager) : ViewModel() {
 
     fun removeAccount(id: String) {
         authManager.removeAccount(id)
-        _accounts.value = authManager.getAccounts()
+        reloadAccounts()
     }
     
     fun resetValidationStatus() {
