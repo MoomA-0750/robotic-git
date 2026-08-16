@@ -37,7 +37,6 @@ class MainActivity : ComponentActivity() {
         settingsViewModel = ViewModelProvider(this, SettingsViewModelFactory(authManager))[SettingsViewModel::class.java]
 
         checkStoragePermission()
-        handleIntent(intent)
 
         setContent {
             val themeMode by settingsViewModel.themeMode.collectAsState()
@@ -60,21 +59,6 @@ class MainActivity : ComponentActivity() {
                     widthSizeClass = windowSizeClass.widthSizeClass,
                     settingsViewModel = settingsViewModel
                 )
-            }
-        }
-    }
-
-    override fun onNewIntent(intent: Intent?) {
-        super.onNewIntent(intent)
-        intent?.let { handleIntent(it) }
-    }
-
-    private fun handleIntent(intent: Intent) {
-        val data: Uri? = intent.data
-        if (data != null && data.toString().startsWith("roboticgit://oauth")) {
-            val code = data.getQueryParameter("code")
-            if (code != null) {
-                settingsViewModel.handleOAuthCode(code)
             }
         }
     }

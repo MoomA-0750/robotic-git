@@ -63,7 +63,6 @@ fun AccountsScreen(
     onBack: () -> Unit,
     viewModel: SettingsViewModel
 ) {
-    val context = LocalContext.current
     val accounts by viewModel.accounts.collectAsState()
     val validationStatus by viewModel.validationStatus.collectAsState()
     var showAddDialog by remember { mutableStateOf(false) }
@@ -139,7 +138,6 @@ fun AccountsScreen(
                     AccountType.GITHUB -> {
                         AddGitHubAccountDialog(
                             onDismiss = onDismiss,
-                            onGitHubLogin = { viewModel.startGitHubLogin(context) },
                             onManualAdd = { token ->
                                 viewModel.addGitHubAccountManual(token)
                             },
@@ -213,12 +211,10 @@ fun ServiceItem(label: String, icon: ImageVector, onClick: () -> Unit) {
 @Composable
 fun AddGitHubAccountDialog(
     onDismiss: () -> Unit,
-    onGitHubLogin: () -> Unit,
     onManualAdd: (String) -> Unit,
     validationStatus: ValidationStatus
 ) {
     var token by remember { mutableStateOf("") }
-    var mode by remember { mutableStateOf("select") }
 
     AppAlertDialog(
         onDismissRequest = onDismiss,
@@ -227,44 +223,29 @@ fun AddGitHubAccountDialog(
             TextButton(onClick = onDismiss) { Text("Cancel") }
         }
     ) {
-        if (mode == "select") {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(
-                    onClick = onGitHubLogin, 
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = ShapeTokens.TextField
-                ) {
-                    Text("Login with Browser")
-                }
-                TextButton(
-                    onClick = { mode = "manual" }, 
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text("Use Personal Access Token instead")
-                }
-            }
-        } else {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text(
-                    "Generate a PAT with 'repo' and 'user' scopes.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                OutlinedTextField(
-                    value = token,
-                    onValueChange = { token = it },
-                    label = { Text("GitHub Token") },
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = ShapeTokens.TextField
-                )
-                Button(
-                    onClick = { onManualAdd(token) }, 
-                    enabled = token.isNotBlank() && validationStatus !is ValidationStatus.Loading,
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = ShapeTokens.TextField
-                ) {
-                    Text("Verify & Add")
-                }
+        // Personal access tokens only. The browser flow needed a client secret,
+        // and a secret shipped inside an APK is not a secret.
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text(
+                "Paste a personal access token. A fine-grained token needs " +
+                    "Contents: Read and write to push, and Metadata: Read.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            OutlinedTextField(
+                value = token,
+                onValueChange = { token = it },
+                label = { Text("GitHub Token") },
+                modifier = Modifier.fillMaxWidth(),
+                shape = ShapeTokens.TextField
+            )
+            Button(
+                onClick = { onManualAdd(token) },
+                enabled = token.isNotBlank() && validationStatus !is ValidationStatus.Loading,
+                modifier = Modifier.fillMaxWidth(),
+                shape = ShapeTokens.TextField
+            ) {
+                Text("Verify & Add")
             }
         }
         if (validationStatus is ValidationStatus.Loading) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 16.dp))

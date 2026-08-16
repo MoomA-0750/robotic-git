@@ -8,7 +8,6 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.example.roboticgit.data.AuthManager
 import com.example.roboticgit.data.GitHubApiService
-import com.example.roboticgit.data.GitHubOAuthConstants
 import com.example.roboticgit.data.model.Account
 import com.example.roboticgit.data.model.AccountType
 import com.example.roboticgit.data.model.AppFont
@@ -109,46 +108,6 @@ class SettingsViewModel(private val authManager: AuthManager) : ViewModel() {
         val md5 = MessageDigest.getInstance("MD5").digest(address.toByteArray())
         val hash = md5.joinToString("") { "%02x".format(it) }
         return "https://www.gravatar.com/avatar/$hash?d=identicon"
-    }
-
-    fun startGitHubLogin(context: Context) {
-        val loginUrl = Uri.parse(GitHubOAuthConstants.AUTH_URL).buildUpon()
-            .appendQueryParameter("client_id", GitHubOAuthConstants.CLIENT_ID)
-            .appendQueryParameter("scope", GitHubOAuthConstants.SCOPES)
-            .appendQueryParameter("redirect_uri", GitHubOAuthConstants.REDIRECT_URI)
-            .build()
-            
-        val intent = Intent(Intent.ACTION_VIEW, loginUrl)
-        context.startActivity(intent)
-    }
-
-    fun handleOAuthCode(code: String) {
-        viewModelScope.launch {
-            _validationStatus.value = ValidationStatus.Loading
-            try {
-                val tokenResponse = service.getAccessToken(
-                    clientId = GitHubOAuthConstants.CLIENT_ID,
-                    clientSecret = GitHubOAuthConstants.CLIENT_SECRET,
-                    code = code,
-                    redirectUri = GitHubOAuthConstants.REDIRECT_URI
-                )
-                
-                val token = tokenResponse.accessToken
-                val user = service.getUser("Bearer $token")
-                
-                val account = Account(
-                    name = user.login,
-                    type = AccountType.GITHUB,
-                    token = token,
-                    avatarUrl = user.avatarUrl
-                )
-                authManager.addAccount(account)
-                _accounts.value = authManager.getAccounts()
-                _validationStatus.value = ValidationStatus.Success
-            } catch (e: Exception) {
-                _validationStatus.value = ValidationStatus.Error(e.message ?: "OAuth failed")
-            }
-        }
     }
 
     fun addGitHubAccountManual(token: String) {
