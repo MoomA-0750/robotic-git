@@ -63,6 +63,38 @@ internal object TestGitFixtures {
 
     fun readFile(dir: File, relativePath: String): String = File(dir, relativePath).readText()
 
+    /** Writes [relativePath], stages it and commits it in one step. */
+    fun commitFile(
+        git: Git,
+        dir: File,
+        relativePath: String,
+        content: String,
+        message: String
+    ): RevCommit {
+        writeFile(dir, relativePath, content)
+        git.add().addFilepattern(relativePath).call()
+        return git.commit().setMessage(message).call()
+    }
+
+    /**
+     * Creates [name] from the current HEAD, commits [content] to [relativePath]
+     * on it, then returns to [BRANCH].
+     *
+     * Uses JGit directly rather than GitManager's own branch commands, so that a
+     * failure in a merge test points at the merge rather than at the setup.
+     */
+    fun branchWithCommit(
+        git: Git,
+        dir: File,
+        name: String,
+        relativePath: String,
+        content: String
+    ) {
+        git.checkout().setCreateBranch(true).setName(name).call()
+        commitFile(git, dir, relativePath, content, "$name: change $relativePath")
+        git.checkout().setName(BRANCH).call()
+    }
+
     /** Wires [remote] up as "origin" and performs the initial explicit push. */
     fun linkAndSeedRemote(git: Git, remoteDir: File) {
         git.remoteAdd()
