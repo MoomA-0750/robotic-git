@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.example.roboticgit.data.AuthManager
 import com.example.roboticgit.data.CommitChange
 import com.example.roboticgit.data.GitManager
+import com.example.roboticgit.data.PushOutcome
 import com.example.roboticgit.data.RepoFile
 import com.example.roboticgit.data.model.BranchInfo
 import com.example.roboticgit.data.model.ConflictFile
@@ -31,8 +32,20 @@ class RepoDetailViewModel(
     private val _uiState = MutableStateFlow<RepoDetailUiState>(RepoDetailUiState.Loading)
     val uiState: StateFlow<RepoDetailUiState> = _uiState.asStateFlow()
 
+    /** Genuine failures. Surfaced as a modal dialog. */
     private val _errorMessage = MutableStateFlow<String?>(null)
     val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
+
+    /**
+     * Confirmations of things that worked. Kept apart from [errorMessage] so a
+     * successful push stops being announced in a dialog titled "Error".
+     */
+    private val _statusMessage = MutableStateFlow<String?>(null)
+    val statusMessage: StateFlow<String?> = _statusMessage.asStateFlow()
+
+    /** True while a refresh runs over content that is already on screen. */
+    private val _isRefreshing = MutableStateFlow(false)
+    val isRefreshing: StateFlow<Boolean> = _isRefreshing.asStateFlow()
 
     private val _isMerging = MutableStateFlow(false)
     val isMerging: StateFlow<Boolean> = _isMerging.asStateFlow()
@@ -52,8 +65,18 @@ class RepoDetailViewModel(
 
     fun loadData() {
         viewModelScope.launch {
-            _uiState.value = RepoDetailUiState.Loading
-            val commitsResult = gitManager.getCommits(repo)
+            // Only blank the screen out when there is nothing to show yet. Every
+            // staging toggle calls this, and swapping the whole pane for a spinner
+            // on each one is most of why the app feels heavy.
+            val hasContent = _uiState.value is RepoDetailUiState.Success
+            if (hasContent) {
+                _isRefreshing.value = true
+            } else {
+                _uiState.value = RepoDetailUiState.Loading
+            }
+
+            // One extra commit tells us whether the history was truncated.
+            val commitsResult = gitManager.getCommits(repo, limit = COMMIT_HISTORY_LIMIT + 1)
             val fileStatusesResult = gitManager.getFileStatuses(repo)
             val currentBranch = gitManager.getCurrentBranch(repo)
             val branchesResult = gitManager.listBranches(repo)
@@ -66,17 +89,20 @@ class RepoDetailViewModel(
             gitManager.listRemotes(repo).onSuccess { _remotes.value = it }
 
             if (commitsResult.isSuccess && fileStatusesResult.isSuccess) {
+                val fetched = commitsResult.getOrDefault(emptyList())
                 _uiState.value = RepoDetailUiState.Success(
-                    commits = commitsResult.getOrDefault(emptyList()),
+                    commits = fetched.take(COMMIT_HISTORY_LIMIT),
                     fileStatuses = fileStatusesResult.getOrDefault(emptyList()),
                     currentBranch = currentBranch,
-                    branches = branchesResult.getOrDefault(emptyList())
+                    branches = branchesResult.getOrDefault(emptyList()),
+                    hasMoreCommits = fetched.size > COMMIT_HISTORY_LIMIT
                 )
             } else {
                 _uiState.value = RepoDetailUiState.Error(
                     commitsResult.exceptionOrNull()?.message ?: fileStatusesResult.exceptionOrNull()?.message ?: "Unknown Error"
                 )
             }
+            _isRefreshing.value = false
         }
     }
 
@@ -150,26 +176,28 @@ class RepoDetailViewModel(
     fun push() {
         viewModelScope.launch {
             val token = authManager.getAccounts().firstOrNull()?.token
-            val result = gitManager.push(repo, token)
-            if (result.isSuccess) {
-                _errorMessage.value = "Push successful"
-                loadData()
-            } else {
-                _errorMessage.value = "Push failed: ${result.exceptionOrNull()?.message}"
-            }
+            gitManager.push(repo, token)
+                .onSuccess { outcome ->
+                    _statusMessage.value = when (outcome) {
+                        is PushOutcome.Pushed ->
+                            "Pushed ${outcome.refs.joinToString(", ").ifBlank { "changes" }}"
+                        PushOutcome.UpToDate -> "Everything up to date"
+                    }
+                    loadData()
+                }
+                .onFailure { _errorMessage.value = "Push failed: ${it.message}" }
         }
     }
 
     fun pull() {
         viewModelScope.launch {
             val token = authManager.getAccounts().firstOrNull()?.token
-            val result = gitManager.pull(repo, token)
-            if (result.isSuccess) {
-                _errorMessage.value = "Pull successful"
-                loadData()
-            } else {
-                _errorMessage.value = "Pull failed: ${result.exceptionOrNull()?.message}"
-            }
+            gitManager.pull(repo, token)
+                .onSuccess {
+                    _statusMessage.value = "Pull complete"
+                    loadData()
+                }
+                .onFailure { _errorMessage.value = "Pull failed: ${it.message}" }
         }
     }
 
@@ -213,6 +241,10 @@ class RepoDetailViewModel(
 
     fun clearError() {
         _errorMessage.value = null
+    }
+
+    fun clearStatusMessage() {
+        _statusMessage.value = null
     }
 
     // ========== Merge functionality ==========
@@ -315,6 +347,15 @@ class RepoDetailViewModel(
             }
         }
     }
+
+    companion object {
+        /**
+         * How many commits the History tab loads. Reading the whole log meant an
+         * unbounded list of RevCommit objects for any repository with real
+         * history, on every refresh.
+         */
+        const val COMMIT_HISTORY_LIMIT = 200
+    }
 }
 
 sealed class RepoDetailUiState {
@@ -323,7 +364,9 @@ sealed class RepoDetailUiState {
         val commits: List<RevCommit>,
         val fileStatuses: List<FileStatus>,
         val currentBranch: String? = null,
-        val branches: List<BranchInfo> = emptyList()
+        val branches: List<BranchInfo> = emptyList(),
+        /** True when the log was cut off at [RepoDetailViewModel.COMMIT_HISTORY_LIMIT]. */
+        val hasMoreCommits: Boolean = false
     ) : RepoDetailUiState()
     data class Error(val message: String) : RepoDetailUiState()
 }
@@ -335,11 +378,26 @@ class RepoDetailViewModelFactory(
 ) : ViewModelProvider.Factory {
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
         if (modelClass.isAssignableFrom(RepoDetailViewModel::class.java)) {
-            val repoFile = File(rootDir, repoName)
+            val repoFile = resolveRepoDirectory()
             val repo = GitRepo(repoName, repoFile.absolutePath, repoFile)
             @Suppress("UNCHECKED_CAST")
             return RepoDetailViewModel(repo, GitManager(rootDir), authManager) as T
         }
         throw IllegalArgumentException("Unknown ViewModel class")
+    }
+
+    /**
+     * Navigation carries only the repository's name, but repositories added by
+     * path live outside the clone directory. Assuming `rootDir/repoName` opened
+     * the wrong directory -- or nothing at all -- for every such repository.
+     */
+    private fun resolveRepoDirectory(): File {
+        val insideRoot = File(rootDir, repoName)
+        if (File(insideRoot, ".git").exists()) return insideRoot
+
+        return authManager.getTrackedRepoPaths()
+            .map(::File)
+            .firstOrNull { it.name == repoName && File(it, ".git").exists() }
+            ?: insideRoot
     }
 }

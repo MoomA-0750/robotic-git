@@ -95,6 +95,17 @@ fun RepoDetailScreen(
     )
     val uiState by viewModel.uiState.collectAsState()
     val errorMessage by viewModel.errorMessage.collectAsState()
+    val statusMessage by viewModel.statusMessage.collectAsState()
+    val isRefreshing by viewModel.isRefreshing.collectAsState()
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    // Successes are transient news, not something to interrupt the user with.
+    LaunchedEffect(statusMessage) {
+        statusMessage?.let {
+            snackbarHostState.showSnackbar(it)
+            viewModel.clearStatusMessage()
+        }
+    }
 
     var commitMessage by remember { mutableStateOf("") }
     val pagerState = rememberPagerState(pageCount = { 4 })
@@ -174,6 +185,7 @@ fun RepoDetailScreen(
                 )
             }
         },
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         floatingActionButton = {
             if (pagerState.currentPage == 3) {
                 FloatingActionButton(onClick = { showCreateBranchDialog = true }) {
@@ -183,6 +195,12 @@ fun RepoDetailScreen(
         }
     ) { paddingValues ->
         Column(modifier = Modifier.padding(paddingValues).fillMaxSize()) {
+            // A refresh over existing content no longer blanks the screen, so it
+            // needs some sign that something is happening.
+            if (isRefreshing) {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            }
+
             // Merge in progress banner
             if (isMerging) {
                 MergeBanner(
@@ -270,7 +288,8 @@ fun RepoDetailScreen(
                                 2 -> HistoryView(
                                     commits = state.commits,
                                     getGravatarUrl = viewModel::getGravatarUrl,
-                                    viewModel = viewModel
+                                    viewModel = viewModel,
+                                    hasMoreCommits = state.hasMoreCommits
                                 )
                                 3 -> BranchesView(
                                     branches = state.branches,
@@ -766,9 +785,10 @@ fun FloatingCommitToolbar(
             )
         )
 
-        // Commit FAB
+        // Commit FAB. FloatingActionButton has no `enabled` parameter, so without
+        // guarding onClick the button stays fully clickable while looking disabled.
         FloatingActionButton(
-            onClick = onCommit,
+            onClick = { if (enabled) onCommit() },
             containerColor = if (enabled)
                 MaterialTheme.colorScheme.primaryContainer
             else
@@ -1204,7 +1224,8 @@ class WhitespaceVisualTransformation(
 fun HistoryView(
     commits: List<RevCommit>,
     getGravatarUrl: (String) -> String,
-    viewModel: RepoDetailViewModel
+    viewModel: RepoDetailViewModel,
+    hasMoreCommits: Boolean = false
 ) {
     var selectedCommit by remember { mutableStateOf<RevCommit?>(null) }
     var commitChanges by remember { mutableStateOf<List<CommitChange>>(emptyList()) }
@@ -1252,6 +1273,18 @@ fun HistoryView(
                         }
                     )
                     HorizontalDivider()
+                }
+
+                // Say so rather than letting the list just stop.
+                if (hasMoreCommits) {
+                    item {
+                        Text(
+                            text = "Showing the ${commits.size} most recent commits.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.fillMaxWidth().padding(16.dp)
+                        )
+                    }
                 }
             }
 
