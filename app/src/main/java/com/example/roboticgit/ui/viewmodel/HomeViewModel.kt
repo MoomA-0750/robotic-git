@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.example.roboticgit.data.AuthManager
 import com.example.roboticgit.data.GitHubApiService
 import com.example.roboticgit.data.GitManager
+import com.example.roboticgit.data.forRemote
 import com.example.roboticgit.data.model.Account
 import com.example.roboticgit.data.model.GitRepo
 import com.example.roboticgit.data.model.RemoteRepo
@@ -230,7 +231,12 @@ class HomeViewModel(
     }
 
     fun cloneRepository(url: String, name: String) {
-        val token = _selectedAccount.value?.token
+        // Same rule as push and pull: a token goes only to the host it was issued
+        // for. Using whichever account happens to be selected in the UI would
+        // send, say, a GitHub token to a self-hosted Gitea the moment its URL is
+        // pasted in -- which is the failure this repository already fixed once,
+        // on the push path.
+        val token = _accounts.value.forRemote(url)?.token
 
         viewModelScope.launch {
             val placeholder = GitRepo(
