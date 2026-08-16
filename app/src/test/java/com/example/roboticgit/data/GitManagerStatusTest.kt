@@ -135,18 +135,67 @@ class GitManagerStatusTest {
     }
 
     @Test
-    fun `getCommits respects the requested limit`() = runBlocking {
+    fun `snapshot caps the history and says when it was truncated`() = runBlocking {
         val repo = TestGitFixtures.repoOf(repoDir)
         repeat(10) { i ->
             TestGitFixtures.writeFile(repoDir, "f$i.txt", "$i\n")
             manager.stageFile(repo, "f$i.txt")
             manager.commit(repo, "commit $i")
         }
+        // 11 commits exist in total, counting the fixture's initial commit.
 
-        val limited = manager.getCommits(repo, limit = 5).getOrThrow()
-        assertEquals(5, limited.size)
+        val limited = manager.loadSnapshot(repo, commitLimit = 5).getOrThrow()
+        assertEquals(5, limited.commits.size)
+        assertEquals(true, limited.hasMoreCommits)
 
-        val all = manager.getCommits(repo).getOrThrow()
-        assertEquals("11 commits exist in total", 11, all.size)
+        val complete = manager.loadSnapshot(repo, commitLimit = 50).getOrThrow()
+        assertEquals(11, complete.commits.size)
+        assertEquals(false, complete.hasMoreCommits)
+    }
+
+    @Test
+    fun `snapshot carries everything the detail screen needs`() = runBlocking {
+        val repo = TestGitFixtures.repoOf(repoDir)
+        TestGitFixtures.writeFile(repoDir, "pending.txt", "x\n")
+
+        val snapshot = manager.loadSnapshot(repo, commitLimit = 10).getOrThrow()
+
+        assertEquals(TestGitFixtures.BRANCH, snapshot.currentBranch)
+        assertEquals(1, snapshot.commits.size)
+        assertEquals(listOf("pending.txt"), snapshot.fileStatuses.map { it.path })
+        assertTrue("the local branch should be listed", snapshot.branches.any { it.isCurrent })
+        assertEquals(false, snapshot.isMerging)
+        assertTrue(snapshot.conflictingFiles.isEmpty())
+    }
+
+    @Test
+    fun `commit summaries carry the fields the UI renders`() = runBlocking {
+        val repo = TestGitFixtures.repoOf(repoDir)
+        TestGitFixtures.writeFile(repoDir, "summary.txt", "x\n")
+        manager.stageFile(repo, "summary.txt")
+        manager.commit(repo, "subject line\n\nbody paragraph\n", "MoomA", "mooma@example.com")
+
+        val head = manager.loadSnapshot(repo, commitLimit = 1).getOrThrow().commits.single()
+
+        assertEquals("subject line", head.shortMessage)
+        assertEquals("MoomA", head.authorName)
+        assertEquals("mooma@example.com", head.authorEmail)
+        assertEquals(40, head.id.length)
+        assertEquals(head.id.take(7), head.abbreviatedId)
+        assertTrue("a commit with a body should report one", head.hasBody)
+        assertTrue("timestamp should be in milliseconds", head.timestamp > 1_000_000_000_000L)
+    }
+
+    @Test
+    fun `snapshot on a directory that is not a repository reports a typed error`() = runBlocking {
+        val notARepo = tmp.newFolder("empty")
+
+        val result = manager.loadSnapshot(TestGitFixtures.repoOf(notARepo), commitLimit = 10)
+
+        assertTrue(result.isFailure)
+        assertTrue(
+            "expected a GitError, got ${result.exceptionOrNull()}",
+            result.exceptionOrNull() is GitError
+        )
     }
 }

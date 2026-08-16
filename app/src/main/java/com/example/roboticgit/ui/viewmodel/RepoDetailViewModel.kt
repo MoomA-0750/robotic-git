@@ -10,6 +10,7 @@ import com.example.roboticgit.data.PushOutcome
 import com.example.roboticgit.data.RepoFile
 import com.example.roboticgit.data.model.BranchInfo
 import com.example.roboticgit.data.model.ConflictFile
+import com.example.roboticgit.data.model.CommitSummary
 import com.example.roboticgit.data.model.FileStatus
 import com.example.roboticgit.data.model.GitRepo
 import com.example.roboticgit.data.model.MergeResult
@@ -19,7 +20,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import org.eclipse.jgit.revwalk.RevCommit
 import java.io.File
 import java.security.MessageDigest
 
@@ -82,33 +82,27 @@ class RepoDetailViewModel(
                 _uiState.value = RepoDetailUiState.Loading
             }
 
-            // One extra commit tells us whether the history was truncated.
-            val commitsResult = gitManager.getCommits(repo, limit = COMMIT_HISTORY_LIMIT + 1)
-            val fileStatusesResult = gitManager.getFileStatuses(repo)
-            val currentBranch = gitManager.getCurrentBranch(repo)
-            val branchesResult = gitManager.listBranches(repo)
+            // One call, one Git.open. This used to be seven separate calls, each
+            // opening and parsing the repository again.
+            gitManager.loadSnapshot(repo, COMMIT_HISTORY_LIMIT)
+                .onSuccess { snapshot ->
+                    _isMerging.value = snapshot.isMerging
+                    _conflictingFiles.value = snapshot.conflictingFiles
+                    _remotes.value = snapshot.remotes
+                    _uiState.value = RepoDetailUiState.Success(
+                        commits = snapshot.commits,
+                        fileStatuses = snapshot.fileStatuses,
+                        currentBranch = snapshot.currentBranch,
+                        branches = snapshot.branches,
+                        hasMoreCommits = snapshot.hasMoreCommits
+                    )
+                }
+                .onFailure { error ->
+                    _uiState.value = RepoDetailUiState.Error(
+                        error.message ?: "Could not read this repository."
+                    )
+                }
 
-            // Check merge state
-            _isMerging.value = gitManager.isMerging(repo)
-            _conflictingFiles.value = gitManager.getConflictingFiles(repo)
-
-            // Load remotes
-            gitManager.listRemotes(repo).onSuccess { _remotes.value = it }
-
-            if (commitsResult.isSuccess && fileStatusesResult.isSuccess) {
-                val fetched = commitsResult.getOrDefault(emptyList())
-                _uiState.value = RepoDetailUiState.Success(
-                    commits = fetched.take(COMMIT_HISTORY_LIMIT),
-                    fileStatuses = fileStatusesResult.getOrDefault(emptyList()),
-                    currentBranch = currentBranch,
-                    branches = branchesResult.getOrDefault(emptyList()),
-                    hasMoreCommits = fetched.size > COMMIT_HISTORY_LIMIT
-                )
-            } else {
-                _uiState.value = RepoDetailUiState.Error(
-                    commitsResult.exceptionOrNull()?.message ?: fileStatusesResult.exceptionOrNull()?.message ?: "Unknown Error"
-                )
-            }
             _isRefreshing.value = false
         }
     }
@@ -126,12 +120,12 @@ class RepoDetailViewModel(
         return gitManager.listFiles(repo, relativePath)
     }
 
-    suspend fun getCommitChanges(commit: RevCommit): List<CommitChange> {
-        return gitManager.getCommitChanges(repo, commit)
+    suspend fun getCommitChanges(commitId: String): List<CommitChange> {
+        return gitManager.getCommitChanges(repo, commitId)
     }
 
-    suspend fun getCommitFileDiff(commit: RevCommit, path: String): String {
-        return gitManager.getCommitFileDiff(repo, commit, path)
+    suspend fun getCommitFileDiff(commitId: String, path: String): String {
+        return gitManager.getCommitFileDiff(repo, commitId, path)
     }
 
     fun saveFile(path: String, content: String) {
@@ -368,7 +362,7 @@ class RepoDetailViewModel(
 sealed class RepoDetailUiState {
     object Loading : RepoDetailUiState()
     data class Success(
-        val commits: List<RevCommit>,
+        val commits: List<CommitSummary>,
         val fileStatuses: List<FileStatus>,
         val currentBranch: String? = null,
         val branches: List<BranchInfo> = emptyList(),

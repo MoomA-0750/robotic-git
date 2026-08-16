@@ -61,6 +61,7 @@ import com.example.roboticgit.data.AuthManager
 import com.example.roboticgit.data.CommitChange
 import com.example.roboticgit.data.RepoFile
 import com.example.roboticgit.data.model.BranchInfo
+import com.example.roboticgit.data.model.CommitSummary
 import com.example.roboticgit.data.model.ConflictFile
 import com.example.roboticgit.data.model.FileState
 import com.example.roboticgit.data.model.FileStatus
@@ -73,7 +74,6 @@ import com.example.roboticgit.ui.viewmodel.RepoDetailUiState
 import com.example.roboticgit.ui.viewmodel.RepoDetailViewModel
 import com.example.roboticgit.ui.viewmodel.RepoDetailViewModelFactory
 import kotlinx.coroutines.launch
-import org.eclipse.jgit.revwalk.RevCommit
 import java.io.File
 import java.util.Date
 
@@ -1184,12 +1184,12 @@ fun CodeEditor(
 
 @Composable
 fun HistoryView(
-    commits: List<RevCommit>,
+    commits: List<CommitSummary>,
     getGravatarUrl: (String) -> String,
     viewModel: RepoDetailViewModel,
     hasMoreCommits: Boolean = false
 ) {
-    var selectedCommit by remember { mutableStateOf<RevCommit?>(null) }
+    var selectedCommit by remember { mutableStateOf<CommitSummary?>(null) }
     var commitChanges by remember { mutableStateOf<List<CommitChange>>(emptyList()) }
     var isLoadingChanges by remember { mutableStateOf(false) }
     var selectedFileDiff by remember { mutableStateOf<String?>(null) }
@@ -1211,7 +1211,7 @@ fun HistoryView(
                     .fillMaxWidth()
             ) {
                 items(commits) { commit ->
-                    val isSelected = selectedCommit?.name == commit.name
+                    val isSelected = selectedCommit?.id == commit.id
                     CommitItem(
                         commit = commit,
                         getGravatarUrl = getGravatarUrl,
@@ -1228,7 +1228,7 @@ fun HistoryView(
                                 selectedFilePath = null
                                 isLoadingChanges = true
                                 scope.launch {
-                                    commitChanges = viewModel.getCommitChanges(commit)
+                                    commitChanges = viewModel.getCommitChanges(commit.id)
                                     isLoadingChanges = false
                                 }
                             }
@@ -1296,7 +1296,7 @@ fun HistoryView(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             AsyncImage(
-                                model = getGravatarUrl(commit.authorIdent.emailAddress),
+                                model = getGravatarUrl(commit.authorEmail),
                                 contentDescription = null,
                                 modifier = Modifier
                                     .size(36.dp)
@@ -1311,7 +1311,7 @@ fun HistoryView(
                                     overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                                 )
                                 Text(
-                                    text = "${commit.authorIdent.name} · ${Date(commit.commitTime * 1000L)}",
+                                    text = "${commit.authorName} · ${Date(commit.timestamp)}",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -1356,7 +1356,7 @@ fun HistoryView(
                                     )
                                     Spacer(Modifier.width(6.dp))
                                     Text(
-                                        text = commit.name,
+                                        text = commit.id,
                                         style = MaterialTheme.typography.labelSmall,
                                         fontFamily = FontFamily.Monospace,
                                         color = MaterialTheme.colorScheme.primary,
@@ -1368,7 +1368,7 @@ fun HistoryView(
                         }
 
                         // Full commit message (if different from short message)
-                        if (commit.fullMessage.trim() != commit.shortMessage.trim()) {
+                        if (commit.hasBody) {
                             item {
                                 Spacer(modifier = Modifier.height(8.dp))
                                 Text(
@@ -1435,7 +1435,7 @@ fun HistoryView(
                                             selectedFileDiff = null
                                             isLoadingDiff = true
                                             scope.launch {
-                                                selectedFileDiff = viewModel.getCommitFileDiff(commit, path)
+                                                selectedFileDiff = viewModel.getCommitFileDiff(commit.id, path)
                                                 isLoadingDiff = false
                                             }
                                         }
@@ -1731,16 +1731,16 @@ private fun FileTreeLeaf(
 
 @Composable
 fun CommitItem(
-    commit: RevCommit,
+    commit: CommitSummary,
     getGravatarUrl: (String) -> String,
     isSelected: Boolean = false,
     onClick: () -> Unit
 ) {
-    val email = commit.authorIdent.emailAddress
+    val email = commit.authorEmail
     ListItem(
         headlineContent = { Text(commit.shortMessage, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis) },
         supportingContent = {
-            Text("${commit.authorIdent.name} · ${Date(commit.commitTime * 1000L)}")
+            Text("${commit.authorName} · ${Date(commit.timestamp)}")
         },
         leadingContent = {
             AsyncImage(
@@ -1759,7 +1759,7 @@ fun CommitItem(
             ),
         trailingContent = {
             Text(
-                text = commit.name.take(7),
+                text = commit.abbreviatedId,
                 style = MaterialTheme.typography.labelSmall,
                 fontFamily = FontFamily.Monospace,
                 color = MaterialTheme.colorScheme.outline

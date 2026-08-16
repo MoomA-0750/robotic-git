@@ -2,6 +2,9 @@ package com.example.roboticgit.data
 
 import com.example.roboticgit.data.model.BranchInfo
 import com.example.roboticgit.data.model.ConflictFile
+import org.eclipse.jgit.util.io.DisabledOutputStream
+import com.example.roboticgit.data.model.RepositorySnapshot
+import com.example.roboticgit.data.model.CommitSummary
 import com.example.roboticgit.data.model.ConflictRegion
 import com.example.roboticgit.data.model.FileState
 import com.example.roboticgit.data.model.FileStatus
@@ -143,9 +146,9 @@ class GitManager(private val rootDir: File) {
                 Result.success(GitRepo(name, destination.absolutePath, destination, lastCommitTime = lastCommitTime))
             }
         } catch (e: GitAPIException) {
-            Result.failure(e)
+            Result.failure(e.toGitError())
         } catch (e: Exception) {
-            Result.failure(e)
+            Result.failure(e.toGitError())
         }
     }
 
@@ -160,54 +163,101 @@ class GitManager(private val rootDir: File) {
                 Result.success(Unit)
             }
         } catch (e: Exception) {
-            Result.failure(e)
+            Result.failure(e.toGitError())
         }
     }
 
-    suspend fun getCommits(repo: GitRepo, limit: Int? = null): Result<List<RevCommit>> = withContext(Dispatchers.IO) {
-        try {
-            Git.open(repo.localPath).use { git ->
-                if (git.repository.resolve(Constants.HEAD) == null) {
-                    return@withContext Result.success(emptyList())
+    /**
+     * Reads everything the repository detail screen shows, from a single open.
+     *
+     * The screen used to assemble this from seven separate calls, each of which
+     * opened and parsed the repository again -- on every refresh, and a refresh
+     * runs on every staging toggle.
+     *
+     * [commitLimit] bounds the log; the result reports whether it was cut off.
+     */
+    suspend fun loadSnapshot(repo: GitRepo, commitLimit: Int): Result<RepositorySnapshot> =
+        withContext(Dispatchers.IO) {
+            try {
+                Git.open(repo.localPath).use { git ->
+                    val repository = git.repository
+                    val status = git.status().call()
+                    val conflicting = status.conflicting.toList()
+
+                    // One extra tells us the log was truncated without a second walk.
+                    val fetched = if (repository.resolve(Constants.HEAD) == null) {
+                        emptyList()
+                    } else {
+                        git.log().setMaxCount(commitLimit + 1).call().toList()
+                    }
+
+                    val state = repository.repositoryState
+
+                    Result.success(
+                        RepositorySnapshot(
+                            commits = fetched.take(commitLimit).map { it.toSummary() },
+                            hasMoreCommits = fetched.size > commitLimit,
+                            fileStatuses = buildFileStatuses(status),
+                            currentBranch = repository.branch,
+                            branches = readBranches(git),
+                            remotes = readRemotes(git),
+                            conflictingFiles = conflicting,
+                            isMerging = state == RepositoryState.MERGING ||
+                                state == RepositoryState.MERGING_RESOLVED
+                        )
+                    )
                 }
-                val log = git.log()
-                if (limit != null && limit > 0) {
-                    log.setMaxCount(limit)
-                }
-                val commits = log.call().toList()
-                Result.success(commits)
+            } catch (e: Exception) {
+                Result.failure(e.toGitError())
             }
-        } catch (e: Exception) {
-            Result.failure(e)
         }
-    }
 
     suspend fun getFileStatuses(repo: GitRepo): Result<List<FileStatus>> = withContext(Dispatchers.IO) {
         try {
             Git.open(repo.localPath).use { git ->
-                val status = git.status().call()
-                val result = mutableListOf<FileStatus>()
-
-                // Conflicting files take priority
-                status.conflicting.forEach { result.add(FileStatus(it, FileState.CONFLICTING, false)) }
-
-                // Filter out conflicting files from other categories
-                val conflictingPaths = status.conflicting.toSet()
-
-                status.modified.filterNot { it in conflictingPaths }.forEach { result.add(FileStatus(it, FileState.MODIFIED, false)) }
-                status.untracked.filterNot { it in conflictingPaths }.forEach { result.add(FileStatus(it, FileState.UNTRACKED, false)) }
-                status.missing.filterNot { it in conflictingPaths }.forEach { result.add(FileStatus(it, FileState.MISSING, false)) }
-
-                status.changed.filterNot { it in conflictingPaths }.forEach { result.add(FileStatus(it, FileState.MODIFIED, true)) }
-                status.added.filterNot { it in conflictingPaths }.forEach { result.add(FileStatus(it, FileState.ADDED, true)) }
-                status.removed.filterNot { it in conflictingPaths }.forEach { result.add(FileStatus(it, FileState.REMOVED, true)) }
-
-                Result.success(result.sortedBy { it.path })
+                Result.success(buildFileStatuses(git.status().call()))
             }
         } catch (e: Exception) {
-            Result.failure(e)
+            Result.failure(e.toGitError())
         }
     }
+
+    /**
+     * Flattens JGit's status buckets into the flat list the Changes tab renders.
+     *
+     * `modified` (index vs working tree) and `changed` (HEAD vs index) overlap by
+     * design: a file staged and then edited again belongs in both, and git itself
+     * lists it under "to be committed" and "not staged" at once. The two rows are
+     * correct -- do not de-duplicate them.
+     */
+    private fun buildFileStatuses(status: org.eclipse.jgit.api.Status): List<FileStatus> {
+        val result = mutableListOf<FileStatus>()
+
+        // Conflicting files take priority
+        status.conflicting.forEach { result.add(FileStatus(it, FileState.CONFLICTING, false)) }
+
+        // Filter out conflicting files from other categories
+        val conflictingPaths = status.conflicting.toSet()
+
+        status.modified.filterNot { it in conflictingPaths }.forEach { result.add(FileStatus(it, FileState.MODIFIED, false)) }
+        status.untracked.filterNot { it in conflictingPaths }.forEach { result.add(FileStatus(it, FileState.UNTRACKED, false)) }
+        status.missing.filterNot { it in conflictingPaths }.forEach { result.add(FileStatus(it, FileState.MISSING, false)) }
+
+        status.changed.filterNot { it in conflictingPaths }.forEach { result.add(FileStatus(it, FileState.MODIFIED, true)) }
+        status.added.filterNot { it in conflictingPaths }.forEach { result.add(FileStatus(it, FileState.ADDED, true)) }
+        status.removed.filterNot { it in conflictingPaths }.forEach { result.add(FileStatus(it, FileState.REMOVED, true)) }
+
+        return result.sortedBy { it.path }
+    }
+
+    private fun RevCommit.toSummary(): CommitSummary = CommitSummary(
+        id = name,
+        shortMessage = shortMessage,
+        fullMessage = fullMessage,
+        authorName = authorIdent?.name.orEmpty(),
+        authorEmail = authorIdent?.emailAddress.orEmpty(),
+        timestamp = commitTime * 1000L
+    )
 
     suspend fun getFileDiff(repo: GitRepo, fileStatus: FileStatus): Result<String> = withContext(Dispatchers.IO) {
         try {
@@ -260,69 +310,88 @@ class GitManager(private val rootDir: File) {
                 }
             }
         } catch (e: Exception) {
-            Result.failure(e)
+            Result.failure(e.toGitError())
         }
     }
 
-    suspend fun getCommitChanges(repo: GitRepo, commit: RevCommit): List<CommitChange> = withContext(Dispatchers.IO) {
-        try {
-            Git.open(repo.localPath).use { git ->
-                val repoObj = git.repository
-                val reader = repoObj.newObjectReader()
-                val oldTreeIter = CanonicalTreeParser()
-                if (commit.parentCount > 0) {
-                    oldTreeIter.reset(reader, commit.getParent(0).tree)
-                } else {
-                    // For the first commit, compare against empty tree
-                    oldTreeIter.reset()
-                }
-                val newTreeIter = CanonicalTreeParser()
-                newTreeIter.reset(reader, commit.tree)
+    /**
+     * Paths touched by [commitId].
+     *
+     * Takes an id rather than a `RevCommit` so the UI never has to hold a JGit
+     * object whose backing reader belongs to a repository handle that closed
+     * long ago.
+     */
+    suspend fun getCommitChanges(repo: GitRepo, commitId: String): List<CommitChange> =
+        withContext(Dispatchers.IO) {
+            try {
+                Git.open(repo.localPath).use { git ->
+                    val repository = git.repository
+                    // use{}: the reader owns pack windows; the previous version
+                    // opened one per call and never closed it.
+                    repository.newObjectReader().use { reader ->
+                        RevWalk(repository).use { walk ->
+                            val commit = walk.parseCommit(repository.resolve(commitId))
+                            val oldTree = parentTreeOf(commit, reader, walk)
+                            val newTree = CanonicalTreeParser().apply { reset(reader, commit.tree) }
 
-                DiffFormatter(null).use { formatter ->
-                    formatter.setRepository(repoObj)
-                    val diffs = formatter.scan(oldTreeIter, newTreeIter)
-                    diffs.map { entry ->
-                        CommitChange(
-                            path = if (entry.changeType == DiffEntry.ChangeType.DELETE) entry.oldPath else entry.newPath,
-                            changeType = entry.changeType.name
-                        )
+                            DiffFormatter(DisabledOutputStream.INSTANCE).use { formatter ->
+                                formatter.setRepository(repository)
+                                formatter.scan(oldTree, newTree).map { entry ->
+                                    CommitChange(
+                                        path = if (entry.changeType == DiffEntry.ChangeType.DELETE) {
+                                            entry.oldPath
+                                        } else {
+                                            entry.newPath
+                                        },
+                                        changeType = entry.changeType.name
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
+            } catch (e: Exception) {
+                emptyList()
             }
-        } catch (e: Exception) {
-            emptyList()
         }
-    }
 
-    suspend fun getCommitFileDiff(repo: GitRepo, commit: RevCommit, path: String): String = withContext(Dispatchers.IO) {
-        try {
-            Git.open(repo.localPath).use { git ->
-                val repoObj = git.repository
-                val out = ByteArrayOutputStream()
-                DiffFormatter(out).use { formatter ->
-                    formatter.setRepository(repoObj)
-                    formatter.setPathFilter(PathFilter.create(path))
-                    
-                    val reader = repoObj.newObjectReader()
-                    val oldTreeIter = CanonicalTreeParser()
-                    if (commit.parentCount > 0) {
-                        oldTreeIter.reset(reader, commit.getParent(0).tree)
-                    } else {
-                        oldTreeIter.reset()
+    suspend fun getCommitFileDiff(repo: GitRepo, commitId: String, path: String): String =
+        withContext(Dispatchers.IO) {
+            try {
+                Git.open(repo.localPath).use { git ->
+                    val repository = git.repository
+                    val out = ByteArrayOutputStream()
+                    repository.newObjectReader().use { reader ->
+                        RevWalk(repository).use { walk ->
+                            val commit = walk.parseCommit(repository.resolve(commitId))
+                            DiffFormatter(out).use { formatter ->
+                                formatter.setRepository(repository)
+                                formatter.setPathFilter(PathFilter.create(path))
+
+                                val oldTree = parentTreeOf(commit, reader, walk)
+                                val newTree = CanonicalTreeParser().apply { reset(reader, commit.tree) }
+
+                                formatter.scan(oldTree, newTree).forEach { formatter.format(it) }
+                                out.toString("UTF-8")
+                            }
+                        }
                     }
-                    val newTreeIter = CanonicalTreeParser()
-                    newTreeIter.reset(reader, commit.tree)
-                    
-                    val diffs = formatter.scan(oldTreeIter, newTreeIter)
-                    for (entry in diffs) {
-                        formatter.format(entry)
-                    }
-                    out.toString("UTF-8")
                 }
+            } catch (e: Exception) {
+                "Error loading diff: ${e.toGitError().message}"
             }
-        } catch (e: Exception) {
-            "Error loading diff: ${e.message}"
+        }
+
+    /** The first parent's tree, or the empty tree for a root commit. */
+    private fun parentTreeOf(
+        commit: RevCommit,
+        reader: org.eclipse.jgit.lib.ObjectReader,
+        walk: RevWalk
+    ): CanonicalTreeParser = CanonicalTreeParser().apply {
+        if (commit.parentCount > 0) {
+            reset(reader, walk.parseCommit(commit.getParent(0)).tree)
+        } else {
+            reset()
         }
     }
 
@@ -335,7 +404,7 @@ class GitManager(private val rootDir: File) {
                 Result.failure(Exception("File not found"))
             }
         } catch (e: Exception) {
-            Result.failure(e)
+            Result.failure(e.toGitError())
         }
     }
 
@@ -345,7 +414,7 @@ class GitManager(private val rootDir: File) {
             file.writeText(content)
             Result.success(Unit)
         } catch (e: Exception) {
-            Result.failure(e)
+            Result.failure(e.toGitError())
         }
     }
 
@@ -372,7 +441,7 @@ class GitManager(private val rootDir: File) {
                 Result.success(Unit)
             }
         } catch (e: Exception) {
-            Result.failure(e)
+            Result.failure(e.toGitError())
         }
     }
 
@@ -383,7 +452,7 @@ class GitManager(private val rootDir: File) {
                 Result.success(Unit)
             }
         } catch (e: Exception) {
-            Result.failure(e)
+            Result.failure(e.toGitError())
         }
     }
 
@@ -394,7 +463,7 @@ class GitManager(private val rootDir: File) {
                 Result.success(Unit)
             }
         } catch (e: Exception) {
-            Result.failure(e)
+            Result.failure(e.toGitError())
         }
     }
 
@@ -430,7 +499,7 @@ class GitManager(private val rootDir: File) {
                 GitOperationException("Nothing is staged. Select the files you want to include first.")
             )
         } catch (e: Exception) {
-            Result.failure(e)
+            Result.failure(e.toGitError())
         }
     }
 
@@ -471,7 +540,7 @@ class GitManager(private val rootDir: File) {
                 }
             }
         } catch (e: Exception) {
-            Result.failure(e)
+            Result.failure(e.toGitError())
         }
     }
 
@@ -493,7 +562,7 @@ class GitManager(private val rootDir: File) {
                 }
             }
         } catch (e: Exception) {
-            Result.failure(e)
+            Result.failure(e.toGitError())
         }
     }
 
@@ -587,7 +656,7 @@ class GitManager(private val rootDir: File) {
                 Result.success(Unit)
             }
         } catch (e: Exception) {
-            Result.failure(e)
+            Result.failure(e.toGitError())
         }
     }
 
@@ -627,23 +696,33 @@ class GitManager(private val rootDir: File) {
     suspend fun listBranches(repo: GitRepo): Result<List<BranchInfo>> = withContext(Dispatchers.IO) {
         try {
             Git.open(repo.localPath).use { git ->
-                val currentBranch = git.repository.branch
-                
-                val localBranches = git.branchList().call()
-                val remoteBranches = git.branchList().setListMode(ListBranchCommand.ListMode.REMOTE).call()
-                
-                val revWalk = RevWalk(git.repository)
-                
-                val result = (localBranches.map { it to false } + remoteBranches.map { it to true }).map { (ref, isRemote) ->
+                Result.success(readBranches(git))
+            }
+        } catch (e: Exception) {
+            Result.failure(e.toGitError())
+        }
+    }
+
+    private fun readBranches(git: Git): List<BranchInfo> {
+        val currentBranch = git.repository.branch
+
+        val localBranches = git.branchList().call()
+        val remoteBranches = git.branchList().setListMode(ListBranchCommand.ListMode.REMOTE).call()
+
+        // use{}: the walk holds an ObjectReader, and leaking one per call kept
+        // pack windows alive for the lifetime of the process.
+        RevWalk(git.repository).use { revWalk ->
+            return (localBranches.map { it to false } + remoteBranches.map { it to true })
+                .map { (ref, isRemote) ->
                     val fullName = ref.name
                     val name = if (isRemote) {
                         fullName.removePrefix("refs/remotes/")
                     } else {
                         fullName.removePrefix("refs/heads/")
                     }
-                    
+
                     val commit = revWalk.parseCommit(ref.objectId)
-                    
+
                     BranchInfo(
                         name = name,
                         fullName = fullName,
@@ -654,10 +733,6 @@ class GitManager(private val rootDir: File) {
                         lastCommitTime = commit.commitTime * 1000L
                     )
                 }
-                Result.success(result)
-            }
-        } catch (e: Exception) {
-            Result.failure(e)
         }
     }
 
@@ -672,7 +747,7 @@ class GitManager(private val rootDir: File) {
                 Result.success(Unit)
             }
         } catch (e: Exception) {
-            Result.failure(e)
+            Result.failure(e.toGitError())
         }
     }
 
@@ -686,7 +761,7 @@ class GitManager(private val rootDir: File) {
                 Result.success(Unit)
             }
         } catch (e: Exception) {
-            Result.failure(e)
+            Result.failure(e.toGitError())
         }
     }
 
@@ -697,7 +772,7 @@ class GitManager(private val rootDir: File) {
                 Result.success(Unit)
             }
         } catch (e: Exception) {
-            Result.failure(e)
+            Result.failure(e.toGitError())
         }
     }
 
@@ -797,7 +872,7 @@ class GitManager(private val rootDir: File) {
                 Result.success(Unit)
             }
         } catch (e: Exception) {
-            Result.failure(e)
+            Result.failure(e.toGitError())
         }
     }
 
@@ -806,21 +881,22 @@ class GitManager(private val rootDir: File) {
     suspend fun listRemotes(repo: GitRepo): Result<List<RemoteInfo>> = withContext(Dispatchers.IO) {
         try {
             Git.open(repo.localPath).use { git ->
-                val config = git.repository.config
-                val remoteNames = config.getSubsections("remote")
-
-                val remotes = remoteNames.map { name ->
-                    RemoteInfo(
-                        name = name,
-                        fetchUrl = config.getString("remote", name, "url") ?: "",
-                        pushUrl = config.getString("remote", name, "pushurl")
-                            ?: config.getString("remote", name, "url") ?: ""
-                    )
-                }
-                Result.success(remotes)
+                Result.success(readRemotes(git))
             }
         } catch (e: Exception) {
-            Result.failure(e)
+            Result.failure(e.toGitError())
+        }
+    }
+
+    private fun readRemotes(git: Git): List<RemoteInfo> {
+        val config = git.repository.config
+        return config.getSubsections("remote").map { name ->
+            RemoteInfo(
+                name = name,
+                fetchUrl = config.getString("remote", name, "url") ?: "",
+                pushUrl = config.getString("remote", name, "pushurl")
+                    ?: config.getString("remote", name, "url") ?: ""
+            )
         }
     }
 
@@ -834,7 +910,7 @@ class GitManager(private val rootDir: File) {
                 Result.success(Unit)
             }
         } catch (e: Exception) {
-            Result.failure(e)
+            Result.failure(e.toGitError())
         }
     }
 
@@ -845,7 +921,7 @@ class GitManager(private val rootDir: File) {
                 Result.success(Unit)
             }
         } catch (e: Exception) {
-            Result.failure(e)
+            Result.failure(e.toGitError())
         }
     }
 
@@ -859,7 +935,7 @@ class GitManager(private val rootDir: File) {
                 Result.success(Unit)
             }
         } catch (e: Exception) {
-            Result.failure(e)
+            Result.failure(e.toGitError())
         }
     }
 
@@ -981,7 +1057,7 @@ class GitManager(private val rootDir: File) {
             }
             Result.success(Unit)
         } catch (e: Exception) {
-            Result.failure(e)
+            Result.failure(e.toGitError())
         }
     }
 
@@ -998,7 +1074,7 @@ class GitManager(private val rootDir: File) {
                 Result.success(Unit)
             }
         } catch (e: Exception) {
-            Result.failure(e)
+            Result.failure(e.toGitError())
         }
     }
 
