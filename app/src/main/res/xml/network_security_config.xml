@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Cleartext HTTP is blocked by default from targetSdk 28 onwards, and that block
+  makes a self-hosted forge unreachable: a Gitea or Forgejo on a home network is
+  routinely served over plain http on a LAN address, with no certificate to
+  present. Without this the app can only ever talk to GitHub and GitLab, which
+  is not what a self-hostable git client is for.
+
+  The trade-off is real and worth stating plainly: an access token sent to an
+  http:// remote travels the local network in the clear, readable by anything
+  else on it. That is a property of serving the forge over http rather than of
+  this setting, but this setting is what allows it to happen, so it should be a
+  deliberate choice and not an accident.
+
+  Scoping this to particular hosts was considered and rejected. The address of a
+  self-hosted instance belongs to the user and changes; baking one into the app
+  would break the moment it moved.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+            <!-- Lets a self-hosted instance be reached through a certificate the
+                 user installed themselves, which is the usual way to put a home
+                 forge behind https. -->
+            <certificates src="user" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

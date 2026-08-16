@@ -51,6 +51,14 @@ class HomeViewModel(
     private val _selectedRepos = MutableStateFlow<Set<String>>(emptySet())
     val selectedRepos: StateFlow<Set<String>> = _selectedRepos.asStateFlow()
 
+    /**
+     * Failures the user needs to see. A clone that does not work used to remove
+     * its row from the list and say nothing at all -- no message, no log entry --
+     * which left no way to tell a wrong URL from a blocked connection.
+     */
+    private val _errorMessage = MutableStateFlow<String?>(null)
+    val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
+
     private val json = Json { ignoreUnknownKeys = true }
 
     // Cached instances to avoid recreation on each call
@@ -77,6 +85,10 @@ class HomeViewModel(
                 current + repoName
             }
         }
+    }
+
+    fun clearError() {
+        _errorMessage.value = null
     }
 
     fun clearSelection() {
@@ -266,6 +278,8 @@ class HomeViewModel(
                 loadRepositories()
             } else {
                 _repos.update { current -> current.filterNot { it.name == name && it.isCloning } }
+                _errorMessage.value =
+                    "Clone failed: ${result.exceptionOrNull()?.message ?: "unknown error"}"
             }
         }
     }

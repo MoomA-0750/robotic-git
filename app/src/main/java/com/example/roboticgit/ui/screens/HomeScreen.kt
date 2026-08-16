@@ -86,6 +86,7 @@ fun HomeScreen(
 
     val repos by viewModel.repos.collectAsState()
     val uiState by viewModel.uiState.collectAsState()
+    val errorMessage by viewModel.errorMessage.collectAsState()
     val remoteRepos by viewModel.remoteRepos.collectAsState()
     val accounts by viewModel.accounts.collectAsState()
     val selectedAccount by viewModel.selectedAccount.collectAsState()
@@ -110,6 +111,20 @@ fun HomeScreen(
     }
 
     Box(modifier = modifier.fillMaxSize()) {
+        // A clone that fails has to say so. Silently dropping the row left no way
+        // to tell a typo in the URL from a connection the platform refused.
+        errorMessage?.let { message ->
+            AppAlertDialog(
+                onDismissRequest = { viewModel.clearError() },
+                title = "Error",
+                confirmButton = {
+                    TextButton(onClick = { viewModel.clearError() }) { Text("OK") }
+                }
+            ) {
+                Text(message)
+            }
+        }
+
         Scaffold(
             containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
             contentWindowInsets = WindowInsets(0, 0, 0, 0),
