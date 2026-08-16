@@ -4,6 +4,8 @@ import android.text.format.DateUtils
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -56,6 +58,7 @@ import com.example.roboticgit.data.model.GitRepo
 import com.example.roboticgit.data.model.RemoteRepo
 import com.example.roboticgit.ui.components.AppAlertDialog
 import com.example.roboticgit.ui.theme.ContainerTransformSpec
+import com.example.roboticgit.ui.theme.EmphasizedDecelerateEasing
 import com.example.roboticgit.ui.theme.ShapeTokens
 import com.example.roboticgit.ui.viewmodel.HomeUiState
 import com.example.roboticgit.ui.viewmodel.HomeViewModel
@@ -838,6 +841,25 @@ fun ContainerTransformDialog(
         label = "containerTransformProgress"
     )
 
+    // Timed in milliseconds rather than derived from the container's progress.
+    // The emphasized curve front-loads its travel -- it is already 45% of the way
+    // there after a fifth of the duration -- so a threshold expressed against it
+    // made the destination fully opaque about a third of the way in, which read
+    // as "the screen was always there and a window slid over it".
+    val contentFade = animateFloatAsState(
+        targetValue = if (visible && contentComposed) 1f else 0f,
+        animationSpec = if (visible) ContentFadeInSpec else ContentFadeOutSpec,
+        label = "containerTransformContentFade"
+    )
+
+    // The FAB's label is the outgoing element on the way in and the incoming one
+    // on the way out. It is never on screen at the same time as the destination.
+    val fabLabelFade = animateFloatAsState(
+        targetValue = if (visible && contentComposed) 0f else 1f,
+        animationSpec = if (visible) FabLabelFadeOutSpec else FabLabelFadeInSpec,
+        label = "containerTransformFabFade"
+    )
+
     // Flips twice per animation rather than changing every frame, so neither the
     // gate below nor the callback churns.
     val isTransforming by remember { derivedStateOf { progress.value > 0f } }
@@ -880,11 +902,6 @@ fun ContainerTransformDialog(
             )
         }
 
-        fun contentAlpha(fraction: Float): Float = if (visible) {
-            ((fraction - 0.2f) / 0.5f).coerceIn(0f, 1f)
-        } else {
-            ((fraction - 0.3f) / 0.4f).coerceIn(0f, 1f)
-        }
 
         Box(modifier = Modifier.fillMaxSize()) {
             // The container itself. Drawn, never laid out, so its size can change
@@ -919,7 +936,7 @@ fun ContainerTransformDialog(
                             this@drawWithContent.drawContent()
                         }
                     }
-                    .graphicsLayer { alpha = contentAlpha(progress.value) }
+                    .graphicsLayer { alpha = contentFade.value }
             ) {
                 content()
             }
@@ -931,7 +948,7 @@ fun ContainerTransformDialog(
                     .fillMaxSize()
                     .graphicsLayer {
                         val fraction = progress.value
-                        alpha = if (visible) 0f else (1f - fraction * 2.5f).coerceIn(0f, 1f)
+                        alpha = fabLabelFade.value
                         val rect = containerRect(fraction)
                         translationX = rect.center.x - screenWidth / 2f
                         translationY = rect.center.y - screenHeight / 2f
@@ -943,6 +960,22 @@ fun ContainerTransformDialog(
         }
     }
 }
+
+/**
+ * Cross-fade timing for the container transform, against the 500 ms the
+ * container takes to grow.
+ *
+ * The destination arrives late and leaves early: the container's movement is
+ * the transition, and the content is what it settles into.
+ */
+private val ContentFadeInSpec =
+    tween<Float>(durationMillis = 220, delayMillis = 240, easing = EmphasizedDecelerateEasing)
+private val ContentFadeOutSpec =
+    tween<Float>(durationMillis = 110, easing = LinearEasing)
+private val FabLabelFadeOutSpec =
+    tween<Float>(durationMillis = 90, easing = LinearEasing)
+private val FabLabelFadeInSpec =
+    tween<Float>(durationMillis = 190, delayMillis = 250, easing = EmphasizedDecelerateEasing)
 
 private fun lerp(start: Float, stop: Float, fraction: Float): Float {
     return start + (stop - start) * fraction
