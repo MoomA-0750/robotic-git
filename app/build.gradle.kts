@@ -42,7 +42,9 @@ android {
         // the identity the device installs under, and it can never change once
         // anyone has the app -- `com.example.*` is reserved for samples and is
         // refused outright by Play, so it had to go before the first release.
-        applicationId = "com.moomatechnica.roboticgit"
+        // The prefix is mooma-0750.xyz reversed, matching the author's other
+        // apps; the hyphen cannot appear in a package segment.
+        applicationId = "xyz.mooma.roboticgit"
         minSdk = 26
         targetSdk = 34
         versionCode = 1

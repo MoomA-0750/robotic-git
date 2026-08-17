@@ -78,6 +78,22 @@ Android 用の Git クライアント。「なんでAndroid向けのGitクライ
 
 計装テストは実際のリポジトリを端末上に作り、`file://` のリモートに対して本当に push / pull します。
 
+## ライセンス
+
+[Apache License 2.0](LICENSE)。自由に使って構いませんが、**無保証**です。
+
+念のため明示しておくと、このアプリはあなたのリポジトリとアクセストークンを扱います。データの喪失・トークンの漏洩・その他あらゆる損害について、作者は責任を負いません。自分のリポジトリでどう動くかは、自分で確かめた上で使ってください。
+
+### 使っているもの
+
+| | ライセンス |
+|---|---|
+| [Eclipse JGit](https://www.eclipse.org/jgit/) | EDL 1.0 (BSD 3-Clause) |
+| AndroidX / Jetpack Compose / Material 3 | Apache-2.0 |
+| [OkHttp](https://square.github.io/okhttp/) / [Retrofit](https://square.github.io/retrofit/) | Apache-2.0 |
+| [kotlinx.serialization](https://github.com/Kotlin/kotlinx.serialization) | Apache-2.0 |
+| [Coil](https://coil-kt.github.io/coil/) | Apache-2.0 |
+
 ## わかっている制約
 
 - 巨大なファイルはエディタで開けません（512KB超は読み取り専用、8MB超は開きません）
