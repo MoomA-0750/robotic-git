@@ -1,8 +1,30 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.jetbrains.kotlin.android)
     alias(libs.plugins.kotlin.serialization)
 }
+
+// The release signing key lives outside the repository, one directory per
+// project, so it is never a `git add -A` away from being committed. A machine
+// without it -- another checkout, CI -- still builds: the release then falls
+// back to the debug key, which is installable but identifies nobody.
+//
+//     ~/.android-keystores/robotic-git/keystore.properties
+//     storeFile / storePassword / keyAlias / keyPassword
+//
+// Losing this file means every future update has to be published under a new
+// package name, because Android will not accept an update signed by a
+// different key. Back it up with the passwords, not separately from them.
+val releaseKeystorePropertiesFile =
+    File(System.getProperty("user.home"), ".android-keystores/robotic-git/keystore.properties")
+val releaseKeystoreProperties = Properties().apply {
+    if (releaseKeystorePropertiesFile.exists()) {
+        releaseKeystorePropertiesFile.inputStream().use { load(it) }
+    }
+}
+val hasReleaseKeystore = releaseKeystorePropertiesFile.exists()
 
 // Instrumentation tests normally run against debug. Pointing them at release is
 // the only way to find out whether R8 stripped something JGit reaches by
@@ -16,11 +38,15 @@ android {
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.example.roboticgit"
+        // Not the `namespace` above, which is only where the code lives. This is
+        // the identity the device installs under, and it can never change once
+        // anyone has the app -- `com.example.*` is reserved for samples and is
+        // refused outright by Play, so it had to go before the first release.
+        applicationId = "com.moomatechnica.roboticgit"
         minSdk = 26
         targetSdk = 34
         versionCode = 1
-        versionName = "1.0"
+        versionName = "0.1.0-beta.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -29,10 +55,18 @@ android {
     }
 
     signingConfigs {
-        // Signed with the debug key on purpose. This is a personal app that is
-        // not distributed through a store, and an unsigned release APK cannot be
-        // installed -- which would make the release build impossible to measure
-        // or test on a device. Replace this if it is ever published.
+        if (hasReleaseKeystore) {
+            create("release") {
+                storeFile = file(releaseKeystoreProperties.getProperty("storeFile"))
+                storePassword = releaseKeystoreProperties.getProperty("storePassword")
+                keyAlias = releaseKeystoreProperties.getProperty("keyAlias")
+                keyPassword = releaseKeystoreProperties.getProperty("keyPassword")
+            }
+        }
+        // The fallback. An unsigned release APK cannot be installed at all,
+        // which would make the release build impossible to measure or test on a
+        // device -- so a machine without the real key still gets something that
+        // runs. Anything built this way is for the bench, not for anyone else.
         create("releaseLocal") {
             storeFile = File(System.getProperty("user.home"), ".android/debug.keystore")
             storePassword = "android"
@@ -45,7 +79,9 @@ android {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
-            signingConfig = signingConfigs.getByName("releaseLocal")
+            signingConfig = signingConfigs.getByName(
+                if (hasReleaseKeystore) "release" else "releaseLocal"
+            )
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
