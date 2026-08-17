@@ -395,14 +395,21 @@ class GitManager(private val rootDir: File) {
         }
     }
 
-    suspend fun readFile(repo: GitRepo, path: String): Result<String> = withContext(Dispatchers.IO) {
+    /**
+     * Reads a file for the editor, with [EditorLimits] deciding what may be
+     * done with it. A file past the hard limit is not read at all -- its size
+     * comes back instead, so the caller can say why rather than stall on it.
+     */
+    suspend fun readFile(repo: GitRepo, path: String): Result<FileContents> = withContext(Dispatchers.IO) {
         try {
             val file = File(repo.localPath, path)
-            if (file.exists()) {
-                Result.success(file.readText())
-            } else {
-                Result.failure(Exception("File not found"))
+            if (!file.exists()) {
+                return@withContext Result.failure(Exception("File not found"))
             }
+            val size = file.length()
+            val access = EditorLimits.accessFor(size)
+            val text = if (access == FileAccess.TOO_LARGE) "" else file.readText()
+            Result.success(FileContents(text = text, sizeBytes = size, access = access))
         } catch (e: Exception) {
             Result.failure(e.toGitError())
         }

@@ -60,6 +60,8 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import com.example.roboticgit.data.AuthManager
 import com.example.roboticgit.data.CommitChange
+import com.example.roboticgit.data.EditorLimits
+import com.example.roboticgit.data.FileAccess
 import com.example.roboticgit.data.RepoFile
 import com.example.roboticgit.data.model.BranchInfo
 import com.example.roboticgit.data.model.CommitSummary
@@ -119,6 +121,9 @@ fun RepoDetailScreen(
 
     var editingPath by rememberSaveable { mutableStateOf<String?>(null) }
     var editingText by rememberSaveable { mutableStateOf("") }
+    // What the size of the opened file allows. See EditorLimits.
+    var editingAccess by rememberSaveable { mutableStateOf(FileAccess.EDITABLE) }
+    var editingSize by rememberSaveable { mutableStateOf(0L) }
 
     var showCreateBranchDialog by remember { mutableStateOf(false) }
     var branchToDelete by remember { mutableStateOf<BranchInfo?>(null) }
@@ -269,7 +274,10 @@ fun RepoDetailScreen(
                                     },
                                     onEditClick = { file ->
                                         scope.launch {
-                                            editingText = viewModel.readFile(file.path)
+                                            val contents = viewModel.readFile(file.path)
+                                            editingText = contents.text
+                                            editingAccess = contents.access
+                                            editingSize = contents.sizeBytes
                                             editingPath = file.path
                                         }
                                     },
@@ -284,7 +292,10 @@ fun RepoDetailScreen(
                                     viewModel = viewModel,
                                     onFileClick = { path ->
                                         scope.launch {
-                                            editingText = viewModel.readFile(path)
+                                            val contents = viewModel.readFile(path)
+                                            editingText = contents.text
+                                            editingAccess = contents.access
+                                            editingSize = contents.sizeBytes
                                             editingPath = path
                                         }
                                     }
@@ -389,7 +400,9 @@ fun RepoDetailScreen(
                     editingPath = null
                 },
                 onDismiss = { editingPath = null },
-                fontSize = editorFontSize
+                fontSize = editorFontSize,
+                access = editingAccess,
+                sizeBytes = editingSize
             )
         }
 
@@ -976,10 +989,24 @@ fun EditorDialog(
     onSave: () -> Unit,
     onDismiss: () -> Unit,
     fontSize: Float = 14f,
-    onFontSizeChange: ((Float) -> Unit)? = null
+    onFontSizeChange: ((Float) -> Unit)? = null,
+    access: FileAccess = FileAccess.EDITABLE,
+    sizeBytes: Long = 0
 ) {
     // Local state for dynamic font size during pinch gestures
     var currentFontSize by rememberSaveable { mutableStateOf(fontSize) }
+
+    val editable = access == FileAccess.EDITABLE
+    // Said in the subtitle rather than in a dialog that has to be dismissed:
+    // the reason is a property of the file, so it belongs next to its name and
+    // should stay readable for as long as the file is open.
+    val subtitle = when (access) {
+        FileAccess.EDITABLE -> "Font: ${"%.1f".format(currentFontSize)}sp"
+        FileAccess.READ_ONLY ->
+            "Read-only — ${EditorLimits.describeSize(sizeBytes)}, too large to edit"
+        FileAccess.TOO_LARGE ->
+            "Not opened — ${EditorLimits.describeSize(sizeBytes)}, too large to display"
+    }
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -993,11 +1020,18 @@ fun EditorDialog(
                 TopAppBar(
                     title = {
                         Column {
-                            Text("Edit: $fileName", maxLines = 1)
                             Text(
-                                text = "Font: ${"%.1f".format(currentFontSize)}sp",
+                                if (editable) "Edit: $fileName" else "View: $fileName",
+                                maxLines = 1
+                            )
+                            Text(
+                                text = subtitle,
                                 style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                color = if (editable) {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                } else {
+                                    MaterialTheme.colorScheme.error
+                                }
                             )
                         }
                     },
@@ -1007,22 +1041,44 @@ fun EditorDialog(
                         }
                     },
                     actions = {
-                        TextButton(onClick = onSave) {
-                            Text("SAVE")
+                        // No SAVE when there is nothing that could be saved. A
+                        // disabled button would only invite the question of why.
+                        if (editable) {
+                            TextButton(onClick = onSave) {
+                                Text("SAVE")
+                            }
                         }
                     }
                 )
 
-                CodeEditor(
-                    value = content,
-                    onValueChange = onContentChange,
-                    modifier = Modifier.weight(1f),
-                    fontSize = currentFontSize,
-                    onFontSizeChange = { newSize ->
-                        currentFontSize = newSize
-                        onFontSizeChange?.invoke(newSize)
+                if (access == FileAccess.TOO_LARGE) {
+                    Box(
+                        modifier = Modifier.weight(1f).fillMaxWidth(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "This file is ${EditorLimits.describeSize(sizeBytes)}. " +
+                                "Files over ${EditorLimits.describeSize(EditorLimits.MAX_READABLE_BYTES)} " +
+                                "are not opened, because holding one in the editor is what runs the " +
+                                "app out of memory rather than merely making it slow.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(32.dp)
+                        )
                     }
-                )
+                } else {
+                    CodeEditor(
+                        value = content,
+                        onValueChange = onContentChange,
+                        modifier = Modifier.weight(1f),
+                        fontSize = currentFontSize,
+                        onFontSizeChange = { newSize ->
+                            currentFontSize = newSize
+                            onFontSizeChange?.invoke(newSize)
+                        },
+                        readOnly = !editable
+                    )
+                }
             }
         }
     }
@@ -1034,7 +1090,8 @@ fun CodeEditor(
     onValueChange: (String) -> Unit,
     modifier: Modifier = Modifier,
     fontSize: Float = 14f,
-    onFontSizeChange: ((Float) -> Unit)? = null
+    onFontSizeChange: ((Float) -> Unit)? = null,
+    readOnly: Boolean = false
 ) {
     val scrollState = rememberScrollState()
     // Reset layout when value length changes significantly to avoid stale layout issues
@@ -1171,6 +1228,9 @@ fun CodeEditor(
             BasicTextField(
                 value = value,
                 onValueChange = onValueChange,
+                // readOnly rather than disabled: selecting and copying out of a
+                // file you cannot edit is most of what you opened it for.
+                readOnly = readOnly,
                 modifier = Modifier.fillMaxWidth(),
                 textStyle = TextStyle(
                     fontFamily = JetBrainsMono,

@@ -11,6 +11,7 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
 import androidx.test.platform.app.InstrumentationRegistry
+import com.example.roboticgit.data.EditorLimits
 import com.example.roboticgit.ui.screens.RepoDetailScreen
 import com.example.roboticgit.ui.theme.RoboticGitTheme
 import org.junit.After
@@ -211,5 +212,59 @@ class RepoDetailScreenTest {
         compose.onNodeWithText(OnDeviceRepositories.REPO_NAME).assertIsDisplayed()
         compose.waitForIdle()
         assertTrue("the file list survives the refresh", textExists("a.txt"))
+    }
+
+    // ---- Editor limits ----
+    //
+    // The editor holds the whole file in one text field, so its cost grows with
+    // the file. These pin the two points where the size takes the decision out
+    // of the user's hands, because the alternative is finding the limit by
+    // typing into something that has stopped answering.
+
+    private fun writeOfSize(name: String, bytes: Long) {
+        File(repos.localDir, name).writeText("x".repeat(bytes.toInt()))
+    }
+
+    private fun openEditorOn(name: String) {
+        showScreen()
+        awaitText(name)
+        compose.onNodeWithContentDescription("Edit").performClick()
+        compose.waitForIdle()
+    }
+
+    @Test
+    fun aFileTooLargeToEditOpensReadOnly() {
+        writeOfSize("generated.txt", EditorLimits.MAX_EDITABLE_BYTES + 1)
+
+        openEditorOn("generated.txt")
+
+        awaitText("Read-only", substring = true)
+        assertTrue("the title should not offer to edit", textExists("View: generated.txt"))
+        assertTrue("there is nothing that could be saved", !textExists("SAVE"))
+    }
+
+    /**
+     * Past the hard limit the point is that the bytes are never held at all, so
+     * this checks the explanation is shown rather than the file.
+     */
+    @Test
+    fun aFileTooLargeToOpenIsNotLoaded() {
+        writeOfSize("huge.bin", EditorLimits.MAX_READABLE_BYTES + 1)
+
+        openEditorOn("huge.bin")
+
+        awaitText("Not opened", substring = true)
+        assertTrue("the contents must not be rendered", !textExists("xxxxxxxxxx", substring = true))
+        assertTrue("there is nothing that could be saved", !textExists("SAVE"))
+    }
+
+    @Test
+    fun anOrdinaryFileStillOpensForEditing() {
+        OnDeviceRepositories.writeFile(repos.localDir, "notes.txt", "editable\n")
+
+        openEditorOn("notes.txt")
+
+        awaitText("Edit: notes.txt")
+        assertTrue("a normal file keeps its save action", textExists("SAVE"))
     }
 }

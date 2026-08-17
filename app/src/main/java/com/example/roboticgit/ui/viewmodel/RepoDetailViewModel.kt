@@ -5,6 +5,8 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.example.roboticgit.data.AuthManager
 import com.example.roboticgit.data.CommitChange
+import com.example.roboticgit.data.FileAccess
+import com.example.roboticgit.data.FileContents
 import com.example.roboticgit.data.GitError
 import com.example.roboticgit.data.GitManager
 import com.example.roboticgit.data.RemoteHost
@@ -118,8 +120,10 @@ class RepoDetailViewModel(
         return result.getOrElse { "Error: ${it.message}" }
     }
 
-    suspend fun readFile(path: String): String {
-        return gitManager.readFile(repo, path).getOrElse { "" }
+    suspend fun readFile(path: String): FileContents {
+        return gitManager.readFile(repo, path).getOrElse {
+            FileContents(text = "", sizeBytes = 0, access = FileAccess.EDITABLE)
+        }
     }
 
     suspend fun listFiles(relativePath: String): List<RepoFile> {
