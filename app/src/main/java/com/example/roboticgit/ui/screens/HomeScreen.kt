@@ -1,7 +1,11 @@
 package com.example.roboticgit.ui.screens
 
+import android.net.Uri
+import android.os.Environment
 import android.text.format.DateUtils
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.LinearEasing
@@ -53,6 +57,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.roboticgit.data.AuthManager
+import com.example.roboticgit.data.DocumentTreePaths
 import com.example.roboticgit.data.model.Account
 import com.example.roboticgit.data.model.GitRepo
 import com.example.roboticgit.data.model.RemoteRepo
@@ -144,7 +149,11 @@ fun HomeScreen(
                 if (!isSelectionMode && !showCloneImportDialog && !isDialogAnimating) {
                     ExtendedFloatingActionButton(
                         onClick = { showCloneImportDialog = true },
-                        icon = { Icon(Icons.Default.Add, contentDescription = null) },
+                        // Material3 clears the semantics of the label slot, so the
+                        // icon carries the name. With the icon undescribed the
+                        // button reached TalkBack -- and the UI tests -- with no
+                        // label of any kind.
+                        icon = { Icon(Icons.Default.Add, contentDescription = "Add Repository") },
                         text = { Text("Add Repository") },
                         shape = ShapeTokens.FAB,
                         modifier = Modifier.onGloballyPositioned { coordinates ->
@@ -356,7 +365,7 @@ fun CloneImportFullScreenDialog(
                 Tab(
                     selected = pagerState.currentPage == 2,
                     onClick = { scope.launch { pagerState.animateScrollToPage(2) } },
-                    text = { Text("Path") }
+                    text = { Text("Local") }
                 )
             }
 
@@ -511,6 +520,18 @@ fun PathTabContent(
     onPathChange: (String) -> Unit,
     onAdd: () -> Unit
 ) {
+    // Typing an absolute path from memory was the only way in here, which made
+    // a repository already on the device feel like something the app could not
+    // open at all. The picker is the same one the clone directory setting uses.
+    val primaryRoot = remember { Environment.getExternalStorageDirectory().absolutePath }
+    val folderPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree()
+    ) { uri: Uri? ->
+        uri?.let { picked ->
+            DocumentTreePaths.forTreeUri(picked, primaryRoot)?.let(onPathChange)
+        }
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -518,24 +539,40 @@ fun PathTabContent(
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         Text(
-            "Add an existing Git repository from your device path.",
+            "Open a repository that is already on this device. Pick the folder " +
+                "that contains .git -- it does not have to be inside the clone directory.",
             style = MaterialTheme.typography.bodyMedium
         )
         OutlinedTextField(
             value = path,
             onValueChange = onPathChange,
-            label = { Text("Absolute Path to .git parent") },
+            label = { Text("Repository folder") },
             placeholder = { Text("/storage/emulated/0/MyProjects/repo") },
+            trailingIcon = {
+                IconButton(onClick = { folderPicker.launch(null) }) {
+                    Icon(Icons.Default.Folder, contentDescription = "Browse")
+                }
+            },
+            singleLine = true,
             modifier = Modifier.fillMaxWidth(),
             shape = ShapeTokens.TextField
         )
+        OutlinedButton(
+            onClick = { folderPicker.launch(null) },
+            modifier = Modifier.fillMaxWidth(),
+            shape = ShapeTokens.Button
+        ) {
+            Icon(Icons.Default.Folder, contentDescription = null)
+            Spacer(modifier = Modifier.width(8.dp))
+            Text("Browse")
+        }
         Button(
             onClick = onAdd,
             modifier = Modifier.fillMaxWidth(),
             shape = ShapeTokens.Button,
             enabled = path.isNotBlank()
         ) {
-            Text("Track Directory")
+            Text("Open Repository")
         }
     }
 }

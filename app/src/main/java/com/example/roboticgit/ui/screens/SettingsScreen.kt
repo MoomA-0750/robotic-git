@@ -1,6 +1,7 @@
 package com.example.roboticgit.ui.screens
 
 import android.net.Uri
+import android.os.Environment
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
@@ -22,6 +23,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
+import com.example.roboticgit.data.DocumentTreePaths
 import com.example.roboticgit.data.model.AppFont
 import com.example.roboticgit.data.model.ThemeMode
 import com.example.roboticgit.ui.viewmodel.SettingsViewModel
@@ -45,19 +47,15 @@ fun SettingsScreen(
     var showIdentityDialog by remember { mutableStateOf(false) }
     var showEditorFontSizeDialog by remember { mutableStateOf(false) }
 
+    val primaryRoot = remember { Environment.getExternalStorageDirectory().absolutePath }
+
     // Directory Picker Launcher
     val directoryPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree()
     ) { uri: Uri? ->
-        uri?.let {
-            val path = it.path ?: ""
-            val cleanPath = if (path.contains(":")) {
-                val split = path.split(":")
-                if (split.size > 1) "/storage/emulated/0/${split[1]}" else path
-            } else {
-                path
-            }
-            viewModel.onDefaultCloneDirChange(cleanPath)
+        uri?.let { picked ->
+            DocumentTreePaths.forTreeUri(picked, primaryRoot)
+                ?.let { viewModel.onDefaultCloneDirChange(it) }
         }
     }
 

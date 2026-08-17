@@ -65,10 +65,29 @@ class HomeViewModel(
 
     private val json = Json { ignoreUnknownKeys = true }
 
-    // Cached instances to avoid recreation on each call
-    private val gitManager: GitManager by lazy {
-        GitManager(File(authManager.getDefaultCloneDir()))
-    }
+    private var cachedGitManager: GitManager? = null
+    private var cachedRoot: String? = null
+
+    /**
+     * A manager pinned to whatever directory the settings name *now*.
+     *
+     * This used to be a `by lazy`, which froze the clone directory the first
+     * time the home screen was built. Changing the setting writes the new path
+     * immediately, but this ViewModel outlives the settings screen, so every
+     * clone kept landing in the old directory -- in practice the default
+     * `RoboticGit` one -- until the process was restarted. Re-reading a
+     * SharedPreferences value already in memory is free; the manager itself is
+     * still reused for as long as the setting does not move.
+     */
+    private val gitManager: GitManager
+        get() {
+            val root = authManager.getDefaultCloneDir()
+            cachedGitManager?.let { if (cachedRoot == root) return it }
+            return GitManager(File(root)).also {
+                cachedGitManager = it
+                cachedRoot = root
+            }
+        }
 
     private val httpClient: OkHttpClient by lazy {
         OkHttpClient.Builder().build()
@@ -130,18 +149,44 @@ class HomeViewModel(
         }
     }
 
+    /**
+     * Tracks a repository that already exists on the device.
+     *
+     * Every rejection says why. Failing silently was indistinguishable from a
+     * dead button: a mistyped path, a folder that turned out not to be a
+     * checkout, a repository already in the list -- all three closed the dialog
+     * and changed nothing on screen.
+     */
     fun addExistingRepository(path: String) {
         viewModelScope.launch {
-            val file = File(path)
-            if (file.exists() && file.isDirectory && File(file, ".git").exists()) {
-                // The repo was created elsewhere, so its config still reflects that
-                // filesystem. On /sdcard the executable bit cannot be stored and
-                // every executable tracked file would show up as permanently
-                // modified until core.fileMode is turned off.
-                gitManager.alignConfigWithFilesystem(file)
-                authManager.addTrackedRepoPath(file.absolutePath)
-                loadRepositories()
+            val file = File(path.trim())
+
+            val problem = withContext(Dispatchers.IO) {
+                when {
+                    path.isBlank() -> "Enter a path, or pick a folder"
+                    !file.exists() -> "No such folder: ${file.absolutePath}"
+                    !file.isDirectory -> "Not a folder: ${file.absolutePath}"
+                    // A worktree or submodule has .git as a file rather than a
+                    // directory, so existence is the right question.
+                    !File(file, ".git").exists() ->
+                        "No .git here, so this is not a repository: ${file.absolutePath}"
+                    _repos.value.any { it.localPath.absolutePath == file.absolutePath } ->
+                        "Already in the list: ${file.name}"
+                    else -> null
+                }
             }
+            if (problem != null) {
+                _errorMessage.value = problem
+                return@launch
+            }
+
+            // The repo was created elsewhere, so its config still reflects that
+            // filesystem. On /sdcard the executable bit cannot be stored and
+            // every executable tracked file would show up as permanently
+            // modified until core.fileMode is turned off.
+            gitManager.alignConfigWithFilesystem(file)
+            authManager.addTrackedRepoPath(file.absolutePath)
+            loadRepositories()
         }
     }
 
