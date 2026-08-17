@@ -57,7 +57,9 @@ class ForgeApiTest {
         listOf(
             account(AccountType.GITHUB),
             account(AccountType.GITHUB, "https://github.example.com/api/v3"),
-            account(AccountType.GITEA, "https://gitea.example.com")
+            account(AccountType.GITEA, "https://gitea.example.com"),
+            account(AccountType.GITLAB),
+            account(AccountType.GITLAB, "https://gitlab.example.com")
         ).forEach {
             val url = it.repoListingBaseUrl()
             assertEquals("$url should end in a slash", true, url?.endsWith("/"))
@@ -69,14 +71,29 @@ class ForgeApiTest {
         assertNull(account(AccountType.GITEA).repoListingBaseUrl())
     }
 
+    @Test
+    fun `gitlab is served under api v4`() {
+        assertEquals(
+            "https://gitlab.com/api/v4/",
+            account(AccountType.GITLAB).repoListingBaseUrl()
+        )
+    }
+
+    @Test
+    fun `a self-hosted gitlab uses its own host`() {
+        assertEquals(
+            "https://gitlab.example.com/api/v4/",
+            account(AccountType.GITLAB, "https://gitlab.example.com/").repoListingBaseUrl()
+        )
+    }
+
     /**
-     * GitLab's API is shaped differently enough that reusing the GitHub service
-     * would silently return nothing; saying so with null lets the caller skip
-     * the request instead of pretending the account is empty.
+     * A custom instance could be running any forge, so there is no listing
+     * endpoint to guess at; saying so with null lets the caller skip the request
+     * rather than issue one that cannot work.
      */
     @Test
-    fun `forges without a wired-up listing report none`() {
-        assertNull(account(AccountType.GITLAB, "https://gitlab.com").repoListingBaseUrl())
+    fun `a custom instance has no listing endpoint to guess`() {
         assertNull(account(AccountType.CUSTOM, "https://git.example.com").repoListingBaseUrl())
     }
 }

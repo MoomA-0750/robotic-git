@@ -5,6 +5,9 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.example.roboticgit.data.AuthManager
 import com.example.roboticgit.data.GitHubApiService
+import com.example.roboticgit.data.model.AccountType
+import com.example.roboticgit.data.toRemoteRepo
+import com.example.roboticgit.data.GitLabApiService
 import com.example.roboticgit.data.GitManager
 import com.example.roboticgit.data.forRemote
 import com.example.roboticgit.data.repoListingBaseUrl
@@ -252,8 +255,16 @@ class HomeViewModel(
                     .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
                     .build()
 
-                val service = retrofit.create(GitHubApiService::class.java)
-                _remoteRepos.value = service.getUserRepos("Bearer ${account.token}")
+                // GitHub and Gitea answer the same request with the same field
+                // names; GitLab needs its own service and a translation.
+                _remoteRepos.value = if (account.type == AccountType.GITLAB) {
+                    retrofit.create(GitLabApiService::class.java)
+                        .getProjects("Bearer ${account.token}")
+                        .map { it.toRemoteRepo() }
+                } else {
+                    retrofit.create(GitHubApiService::class.java)
+                        .getUserRepos("Bearer ${account.token}")
+                }
             } catch (e: Exception) {
                 _remoteRepos.value = emptyList()
             }

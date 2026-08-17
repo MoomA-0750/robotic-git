@@ -20,12 +20,12 @@ fun Account.repoListingBaseUrl(): String? = when (type) {
 
     AccountType.GITEA -> baseUrl?.let { "${it.trimEnd('/')}/api/v1/" }
 
-    // GitLab's API is shaped differently -- /api/v4/projects, with
-    // path_with_namespace and http_url_to_repo rather than full_name and
-    // clone_url -- so listing is not wired up for it. A custom instance could be
-    // anything at all. Both can still be cloned by pasting a URL into the Clone
-    // tab; only the browse-and-pick list is unavailable.
-    AccountType.GITLAB, AccountType.CUSTOM -> null
+    AccountType.GITLAB -> "${(baseUrl ?: "https://gitlab.com").trimEnd('/')}/api/v4/"
+
+    // A custom instance could be running anything, so there is no listing
+    // endpoint to guess at. Such an account still works for cloning by URL from
+    // the Clone tab; only the browse-and-pick list is unavailable.
+    AccountType.CUSTOM -> null
 }
 
 /** Retrofit requires a base URL that ends in a slash. */
