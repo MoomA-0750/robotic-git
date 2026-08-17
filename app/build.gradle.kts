@@ -4,6 +4,13 @@ plugins {
     alias(libs.plugins.kotlin.serialization)
 }
 
+// Instrumentation tests normally run against debug. Pointing them at release is
+// the only way to find out whether R8 stripped something JGit reaches by
+// reflection, so it is switchable:
+//     ./gradlew connectedAndroidTest -PtestBuildType=release
+// Both the R8 rules and the test manifest below depend on which one it is.
+val instrumentedBuildType = (project.findProperty("testBuildType") as String?) ?: "debug"
+
 android {
     namespace = "com.example.roboticgit"
     compileSdk = 34
@@ -43,6 +50,12 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            // Only when release is the build type under test. The runner lives
+            // in the test APK but loads the Kotlin stdlib out of the app APK,
+            // and R8 has no reason to keep the parts only the runner reaches.
+            if (instrumentedBuildType == "release") {
+                proguardFiles("proguard-under-test.pro")
+            }
             // The instrumentation APK is shrunk by a separate R8 pass that does
             // not inherit the rules above; without this the test build fails on
             // the same absent compile-time annotations.
@@ -50,11 +63,7 @@ android {
         }
     }
 
-    // Instrumentation tests normally run against debug. Pointing them at release
-    // is the only way to find out whether R8 stripped something JGit reaches by
-    // reflection, so it is switchable:
-    //     ./gradlew connectedAndroidTest -PtestBuildType=release
-    testBuildType = (project.findProperty("testBuildType") as String?) ?: "debug"
+    testBuildType = instrumentedBuildType
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -118,6 +127,15 @@ dependencies {
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.ui.test.junit4)
+    // This carries nothing but a manifest entry for the bare ComponentActivity
+    // that createAndroidComposeRule launches, and the declaration has to belong
+    // to the APK under test. Pinning it to debug leaves the activity undeclared
+    // when the tests are pointed at release:
+    //     Unable to resolve activity for: Intent { cmp=...test/androidx.activity.ComponentActivity }
+    // and moving it to androidTest declares it in the wrong APK instead:
+    //     Intent in process ...roboticgit resolved to different process ...roboticgit.test
+    // So it follows testBuildType. A release APK that is not being instrumented
+    // never sees it.
+    add("${instrumentedBuildType}Implementation", libs.androidx.ui.test.manifest)
     debugImplementation(libs.androidx.ui.tooling)
-    debugImplementation(libs.androidx.ui.test.manifest)
 }
