@@ -3,7 +3,10 @@ package com.example.roboticgit.ui.theme
 import android.app.Activity
 import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.MaterialExpressiveTheme
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.MotionScheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
@@ -39,6 +42,7 @@ val MaterialTheme.extendedColors: ExtendedColors
     @ReadOnlyComposable
     get() = LocalExtendedColors.current
 
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun RoboticGitTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
@@ -72,8 +76,9 @@ fun RoboticGitTheme(
     }
 
     CompositionLocalProvider(LocalExtendedColors provides extendedColors) {
-        MaterialTheme(
+        MaterialExpressiveTheme(
             colorScheme = colorScheme,
+            motionScheme = MotionScheme.expressive(),
             typography = getTypography(appFont),
             shapes = AppShapes,
             content = content
