@@ -1,3 +1,5 @@
+@file:OptIn(ExperimentalMaterial3ExpressiveApi::class)
+
 package com.example.roboticgit.ui
 
 import androidx.compose.animation.*
@@ -10,7 +12,15 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material3.*
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationItemIconPosition
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.ShortNavigationBar
+import androidx.compose.material3.ShortNavigationBarArrangement
+import androidx.compose.material3.ShortNavigationBarItem
+import androidx.compose.material3.Text
 import androidx.compose.material3.windowsizeclass.WindowWidthSizeClass
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -31,7 +41,7 @@ import com.example.roboticgit.ui.screens.AccountsScreen
 import com.example.roboticgit.ui.screens.HomeScreen
 import com.example.roboticgit.ui.screens.RepoDetailScreen
 import com.example.roboticgit.ui.screens.SettingsScreen
-import com.example.roboticgit.ui.theme.ScreenTransitions
+import com.example.roboticgit.ui.theme.rememberScreenTransitions
 import com.example.roboticgit.ui.viewmodel.SettingsViewModel
 
 @Composable
@@ -128,52 +138,31 @@ fun FlexibleNavigationBar(
     navigateToSettings: () -> Unit,
     useHorizontalLabels: Boolean = false
 ) {
-    NavigationBar {
-        if (useHorizontalLabels) {
-            // Tablet: Horizontal arrangement (icon + label side by side)
-            NavigationBarItem(
-                selected = currentRoute == RoboticGitDestinations.HOME_ROUTE,
-                onClick = navigateToHome,
-                icon = {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Icon(Icons.Default.Home, contentDescription = null)
-                        Text("Home")
-                    }
-                },
-                label = null
-            )
-            NavigationBarItem(
-                selected = currentRoute == RoboticGitDestinations.SETTINGS_ROUTE,
-                onClick = navigateToSettings,
-                icon = {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Icon(Icons.Default.Settings, contentDescription = null)
-                        Text("Settings")
-                    }
-                },
-                label = null
-            )
+    // Tablet: items gathered in the centre with the icon beside the label.
+    // Phone: items share the width with the icon above the label.
+    val iconPosition =
+        if (useHorizontalLabels) NavigationItemIconPosition.Start else NavigationItemIconPosition.Top
+    ShortNavigationBar(
+        arrangement = if (useHorizontalLabels) {
+            ShortNavigationBarArrangement.Centered
         } else {
-            // Phone: Vertical arrangement (icon above label)
-            NavigationBarItem(
-                selected = currentRoute == RoboticGitDestinations.HOME_ROUTE,
-                onClick = navigateToHome,
-                icon = { Icon(Icons.Default.Home, contentDescription = "Home") },
-                label = { Text("Home") }
-            )
-            NavigationBarItem(
-                selected = currentRoute == RoboticGitDestinations.SETTINGS_ROUTE,
-                onClick = navigateToSettings,
-                icon = { Icon(Icons.Default.Settings, contentDescription = "Settings") },
-                label = { Text("Settings") }
-            )
+            ShortNavigationBarArrangement.EqualWeight
         }
+    ) {
+        ShortNavigationBarItem(
+            selected = currentRoute == RoboticGitDestinations.HOME_ROUTE,
+            onClick = navigateToHome,
+            icon = { Icon(Icons.Default.Home, contentDescription = null) },
+            label = { Text("Home") },
+            iconPosition = iconPosition
+        )
+        ShortNavigationBarItem(
+            selected = currentRoute == RoboticGitDestinations.SETTINGS_ROUTE,
+            onClick = navigateToSettings,
+            icon = { Icon(Icons.Default.Settings, contentDescription = null) },
+            label = { Text("Settings") },
+            iconPosition = iconPosition
+        )
     }
 }
 
@@ -216,30 +205,31 @@ fun SinglePaneContent(
     navigateUp: () -> Unit,
     settingsViewModel: SettingsViewModel
 ) {
+    val transitions = rememberScreenTransitions()
     NavHost(
         navController = navController,
         startDestination = RoboticGitDestinations.HOME_ROUTE,
         modifier = Modifier.fillMaxSize(),
-        enterTransition = { ScreenTransitions.enter },
-        exitTransition = { ScreenTransitions.exit },
-        popEnterTransition = { ScreenTransitions.popEnter },
-        popExitTransition = { ScreenTransitions.popExit }
+        enterTransition = { transitions.enter },
+        exitTransition = { transitions.exit },
+        popEnterTransition = { transitions.popEnter },
+        popExitTransition = { transitions.popExit }
     ) {
         composable(
             route = RoboticGitDestinations.HOME_ROUTE,
-            enterTransition = { ScreenTransitions.fadeEnter },
-            exitTransition = { ScreenTransitions.fadeExit },
-            popEnterTransition = { ScreenTransitions.fadeEnter },
-            popExitTransition = { ScreenTransitions.fadeExit }
+            enterTransition = { transitions.fadeEnter },
+            exitTransition = { transitions.fadeExit },
+            popEnterTransition = { transitions.fadeEnter },
+            popExitTransition = { transitions.fadeExit }
         ) {
             HomeScreen(onRepoClick = navigateToRepoDetail)
         }
         composable(
             route = RoboticGitDestinations.SETTINGS_ROUTE,
-            enterTransition = { ScreenTransitions.fadeEnter },
-            exitTransition = { ScreenTransitions.fadeExit },
-            popEnterTransition = { ScreenTransitions.fadeEnter },
-            popExitTransition = { ScreenTransitions.fadeExit }
+            enterTransition = { transitions.fadeEnter },
+            exitTransition = { transitions.fadeExit },
+            popEnterTransition = { transitions.fadeEnter },
+            popExitTransition = { transitions.fadeExit }
         ) {
             SettingsScreen(
                 onNavigateToAccounts = navigateToAccounts,
@@ -271,14 +261,15 @@ fun TwoPaneContent(
     navigateUp: () -> Unit,
     settingsViewModel: SettingsViewModel
 ) {
+    val transitions = rememberScreenTransitions()
     NavHost(
         navController = navController,
         startDestination = RoboticGitDestinations.HOME_ROUTE,
         modifier = Modifier.fillMaxSize(),
-        enterTransition = { ScreenTransitions.fadeEnter },
-        exitTransition = { ScreenTransitions.fadeExit },
-        popEnterTransition = { ScreenTransitions.fadeEnter },
-        popExitTransition = { ScreenTransitions.fadeExit }
+        enterTransition = { transitions.fadeEnter },
+        exitTransition = { transitions.fadeExit },
+        popEnterTransition = { transitions.fadeEnter },
+        popExitTransition = { transitions.fadeExit }
     ) {
         composable(RoboticGitDestinations.HOME_ROUTE) {
             ListDetailLayout(

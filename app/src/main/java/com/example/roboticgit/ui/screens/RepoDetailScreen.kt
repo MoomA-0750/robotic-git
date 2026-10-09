@@ -1,3 +1,5 @@
+@file:OptIn(ExperimentalMaterial3ExpressiveApi::class)
+
 package com.example.roboticgit.ui.screens
 
 import androidx.compose.animation.*
@@ -25,7 +27,39 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.*
-import androidx.compose.material3.*
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearWavyProgressIndicator
+import androidx.compose.material3.ListItem
+import androidx.compose.material3.LoadingIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.PrimaryTabRow
+import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Tab
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
@@ -207,7 +241,7 @@ fun RepoDetailScreen(
             // A refresh over existing content no longer blanks the screen, so it
             // needs some sign that something is happening.
             if (isRefreshing) {
-                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                LinearWavyProgressIndicator(modifier = Modifier.fillMaxWidth())
             }
 
             // Merge in progress banner
@@ -245,7 +279,7 @@ fun RepoDetailScreen(
             Box(modifier = Modifier.weight(1f)) {
                 when (val state = uiState) {
                     is RepoDetailUiState.Loading -> {
-                         CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
+                         LoadingIndicator(modifier = Modifier.align(Alignment.Center))
                     }
                     is RepoDetailUiState.Success -> {
                         // HorizontalPager provides natural Lateral Transition for tabs
@@ -936,7 +970,7 @@ fun DiffDialog(
                     .padding(8.dp)
             ) {
                 if (diffText == null) {
-                    CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
+                    LoadingIndicator(modifier = Modifier.align(Alignment.Center))
                 } else {
                     // Splitting on every recomposition would redo this for a diff
                     // that has not changed.
@@ -1481,7 +1515,7 @@ fun HistoryView(
                                         .padding(16.dp),
                                     contentAlignment = Alignment.Center
                                 ) {
-                                    CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                                    LoadingIndicator(modifier = Modifier.size(24.dp))
                                 }
                             }
                         } else {
@@ -1691,12 +1725,15 @@ private fun FileTreeLeaf(
     onFileClick: (String) -> Unit,
     depth: Int
 ) {
+    // Same status colours as the working-tree list, so a change reads the same
+    // in both places. Rename and copy have no status colour of their own.
+    val extendedColors = MaterialTheme.extendedColors
     val changeColor = when (node.changeType) {
-        "ADD" -> Color(0xFF4CAF50)
-        "DELETE" -> Color(0xFFF44336)
-        "MODIFY" -> Color(0xFFFF9800)
-        "RENAME" -> Color(0xFF2196F3)
-        "COPY" -> Color(0xFF9C27B0)
+        "ADD" -> extendedColors.statusAdded
+        "DELETE" -> extendedColors.statusDeleted
+        "MODIFY" -> extendedColors.statusModified
+        "RENAME" -> MaterialTheme.colorScheme.primary
+        "COPY" -> MaterialTheme.colorScheme.tertiary
         else -> MaterialTheme.colorScheme.onSurface
     }
     val changeLabel = when (node.changeType) {
@@ -1780,7 +1817,7 @@ private fun FileTreeLeaf(
                             .padding(16.dp),
                         contentAlignment = Alignment.Center
                     ) {
-                        CircularProgressIndicator(modifier = Modifier.size(20.dp))
+                        LoadingIndicator(modifier = Modifier.size(20.dp))
                     }
                 } else {
                     SideBySideDiffView(

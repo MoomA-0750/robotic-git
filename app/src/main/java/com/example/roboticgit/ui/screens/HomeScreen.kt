@@ -1,3 +1,5 @@
+@file:OptIn(ExperimentalMaterial3ExpressiveApi::class)
+
 package com.example.roboticgit.ui.screens
 
 import android.net.Uri
@@ -7,9 +9,8 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -26,7 +27,30 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.Folder
-import androidx.compose.material3.*
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearWavyProgressIndicator
+import androidx.compose.material3.LoadingIndicator
+import androidx.compose.material3.ListItem
+import androidx.compose.material3.ListItemDefaults
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.PrimaryTabRow
+import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SmallExtendedFloatingActionButton
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Tab
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
 import androidx.compose.runtime.withFrameNanos
@@ -62,12 +86,11 @@ import com.example.roboticgit.data.model.Account
 import com.example.roboticgit.data.model.GitRepo
 import com.example.roboticgit.data.model.RemoteRepo
 import com.example.roboticgit.ui.components.AppAlertDialog
-import com.example.roboticgit.ui.theme.ContainerTransformSpec
-import com.example.roboticgit.ui.theme.EmphasizedDecelerateEasing
 import com.example.roboticgit.ui.theme.ShapeTokens
 import com.example.roboticgit.ui.viewmodel.HomeUiState
 import com.example.roboticgit.ui.viewmodel.HomeViewModel
 import com.example.roboticgit.ui.viewmodel.HomeViewModelFactory
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -147,7 +170,7 @@ fun HomeScreen(
             },
             floatingActionButton = {
                 if (!isSelectionMode && !showCloneImportDialog && !isDialogAnimating) {
-                    ExtendedFloatingActionButton(
+                    SmallExtendedFloatingActionButton(
                         onClick = { showCloneImportDialog = true },
                         // Material3 clears the semantics of the label slot, so the
                         // icon carries the name. With the icon undescribed the
@@ -155,7 +178,6 @@ fun HomeScreen(
                         // label of any kind.
                         icon = { Icon(Icons.Default.Add, contentDescription = "Add Repository") },
                         text = { Text("Add Repository") },
-                        shape = ShapeTokens.FAB,
                         modifier = Modifier.onGloballyPositioned { coordinates ->
                             fabBounds = coordinates.boundsInRoot()
                         }
@@ -176,7 +198,7 @@ fun HomeScreen(
                     when (val state = uiState) {
                         is HomeUiState.Loading -> {
                             if (!isRefreshing) {
-                                CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
+                                LoadingIndicator(modifier = Modifier.align(Alignment.Center))
                             }
                         }
                         is HomeUiState.Success -> {
@@ -790,13 +812,11 @@ fun RepoItem(
                         text = "Status: ${repo.statusMessage}",
                         style = MaterialTheme.typography.bodySmall
                     )
-                    LinearProgressIndicator(
-                        progress = repo.progress,
+                    LinearWavyProgressIndicator(
+                        progress = { repo.progress },
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(top = 8.dp)
-                            .height(8.dp)
-                            .clip(CircleShape)
                     )
                 }
             } else {
@@ -902,34 +922,43 @@ fun ContainerTransformDialog(
     // Deliberately not destructured with `by`: reading the value here would make
     // it a composition-phase read, and this whole subtree would recompose on
     // every frame. Every use below reads it inside a draw or layer lambda.
+    //
+    // The container moves on the theme's spatial spring, so it may overshoot 1
+    // a little on the way in and dip below 0 on the way out. Everything that
+    // reads it below clamps where an overshoot would be invalid (colour, corner
+    // radius) and treats a value at or below the threshold as "closed".
+    val motion = MaterialTheme.motionScheme
     val progress = animateFloatAsState(
         targetValue = if (visible && contentComposed) 1f else 0f,
-        animationSpec = ContainerTransformSpec,
+        animationSpec = motion.defaultSpatialSpec(),
         label = "containerTransformProgress"
     )
 
-    // Timed in milliseconds rather than derived from the container's progress.
-    // The emphasized curve front-loads its travel -- it is already 45% of the way
-    // there after a fifth of the duration -- so a threshold expressed against it
-    // made the destination fully opaque about a third of the way in, which read
-    // as "the screen was always there and a window slid over it".
-    val contentFade = animateFloatAsState(
-        targetValue = if (visible && contentComposed) 1f else 0f,
-        animationSpec = if (visible) ContentFadeInSpec else ContentFadeOutSpec,
-        label = "containerTransformContentFade"
-    )
-
+    // Timed by a delay rather than derived from the container's progress.
+    // The container's motion front-loads its travel, so a threshold expressed
+    // against it made the destination fully opaque about a third of the way in,
+    // which read as "the screen was always there and a window slid over it".
+    // The fades themselves use the theme's effects springs.
+    //
     // The FAB's label is the outgoing element on the way in and the incoming one
     // on the way out. It is never on screen at the same time as the destination.
-    val fabLabelFade = animateFloatAsState(
-        targetValue = if (visible && contentComposed) 0f else 1f,
-        animationSpec = if (visible) FabLabelFadeOutSpec else FabLabelFadeInSpec,
-        label = "containerTransformFabFade"
-    )
+    val contentFade = remember { Animatable(0f) }
+    val fabLabelFade = remember { Animatable(1f) }
+    LaunchedEffect(visible && contentComposed) {
+        if (visible && contentComposed) {
+            launch { fabLabelFade.animateTo(0f, motion.fastEffectsSpec()) }
+            delay(ContentFadeInDelayMillis)
+            contentFade.animateTo(1f, motion.defaultEffectsSpec())
+        } else {
+            launch { contentFade.animateTo(0f, motion.fastEffectsSpec()) }
+            delay(FabLabelFadeInDelayMillis)
+            fabLabelFade.animateTo(1f, motion.defaultEffectsSpec())
+        }
+    }
 
     // Flips twice per animation rather than changing every frame, so neither the
     // gate below nor the callback churns.
-    val isTransforming by remember { derivedStateOf { progress.value > 0f } }
+    val isTransforming by remember { derivedStateOf { progress.value > ClosedThreshold } }
 
     // The FAB stays put while the content composes: hiding it before the
     // container has started growing would leave a visibly empty corner.
@@ -976,9 +1005,10 @@ fun ContainerTransformDialog(
             Canvas(modifier = Modifier.fillMaxSize()) {
                 val fraction = progress.value
                 val rect = containerRect(fraction)
-                val radius = lerp(16.dp.toPx(), 0f, fraction)
+                val clamped = fraction.coerceIn(0f, 1f)
+                val radius = lerp(16.dp.toPx(), 0f, clamped)
                 drawRoundRect(
-                    color = lerp(fabColor, dialogColor, fraction),
+                    color = lerp(fabColor, dialogColor, clamped),
                     topLeft = rect.topLeft,
                     size = rect.size,
                     cornerRadius = CornerRadius(radius, radius)
@@ -1029,20 +1059,18 @@ fun ContainerTransformDialog(
 }
 
 /**
- * Cross-fade timing for the container transform, against the 500 ms the
- * container takes to grow.
+ * Cross-fade choreography for the container transform: how long each incoming
+ * element waits before it starts to fade in, roughly half of the container's
+ * spring.
  *
  * The destination arrives late and leaves early: the container's movement is
  * the transition, and the content is what it settles into.
  */
-private val ContentFadeInSpec =
-    tween<Float>(durationMillis = 220, delayMillis = 240, easing = EmphasizedDecelerateEasing)
-private val ContentFadeOutSpec =
-    tween<Float>(durationMillis = 110, easing = LinearEasing)
-private val FabLabelFadeOutSpec =
-    tween<Float>(durationMillis = 90, easing = LinearEasing)
-private val FabLabelFadeInSpec =
-    tween<Float>(durationMillis = 190, delayMillis = 250, easing = EmphasizedDecelerateEasing)
+private const val ContentFadeInDelayMillis = 240L
+private const val FabLabelFadeInDelayMillis = 250L
+
+/** Below this the container counts as closed, so a spring's undershoot past 0 does not flicker the FAB. */
+private const val ClosedThreshold = 0.001f
 
 private fun lerp(start: Float, stop: Float, fraction: Float): Float {
     return start + (stop - start) * fraction

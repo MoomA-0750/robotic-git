@@ -1,3 +1,5 @@
+@file:OptIn(ExperimentalMaterial3ExpressiveApi::class)
+
 package com.example.roboticgit.ui.screens
 
 import androidx.compose.foundation.clickable
@@ -25,13 +27,14 @@ import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
-import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.LinearWavyProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -257,7 +260,7 @@ fun AddGitHubAccountDialog(
                 Text("Verify & Add")
             }
         }
-        if (validationStatus is ValidationStatus.Loading) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 16.dp))
+        if (validationStatus is ValidationStatus.Loading) LinearWavyProgressIndicator(Modifier.fillMaxWidth().padding(top = 16.dp))
         if (validationStatus is ValidationStatus.Error) {
             Text(
                 validationStatus.message, 
@@ -326,7 +329,7 @@ fun AddGenericAccountDialog(
                 visualTransformation = PasswordVisualTransformation(),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password)
             )
-            if (validationStatus is ValidationStatus.Loading) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 8.dp))
+            if (validationStatus is ValidationStatus.Loading) LinearWavyProgressIndicator(Modifier.fillMaxWidth().padding(top = 8.dp))
             if (validationStatus is ValidationStatus.Error) {
                 Text(
                     validationStatus.message, 
